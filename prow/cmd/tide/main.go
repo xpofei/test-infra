@@ -50,6 +50,7 @@ var (
 	configPath = flag.String("config-path", "/etc/config/config", "Path to config.yaml.")
 	cluster    = flag.String("cluster", "", "Path to kube.Cluster YAML file. If empty, uses the local cluster.")
 
+	githubUsername  = flag.String("github-username", "caicloud-bot", "GitHub's Username.")
 	githubEndpoint  = flag.String("github-endpoint", "https://api.github.com", "GitHub's API endpoint.")
 	githubTokenFile = flag.String("github-token-file", "/etc/github/oauth", "Path to the file containing the GitHub OAuth token.")
 )
@@ -110,6 +111,8 @@ func main() {
 	if err != nil {
 		logrus.WithError(err).Fatal("Error getting git client.")
 	}
+
+	gc.SetCredentials(*githubUsername, oauthSecret)
 	defer gc.Clean()
 	// Get the bot's name in order to set credentials for the git client.
 	botName, err := ghcSync.BotName()
