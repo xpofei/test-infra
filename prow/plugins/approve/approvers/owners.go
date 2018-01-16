@@ -585,7 +585,7 @@ Associated issue requirement bypassed by: {{range $index, $approval := .ap.ListN
 
 {{ end -}}
 
-The full list of commands accepted by this bot can be found [here](https://go.k8s.io/bot-commands).
+The full list of commands accepted by this bot can be found [here](https://github.com/caicloud/engineering/blob/master/docs/caicloud_bot.md#bot-commands).
 
 <details {{if (and (not .ap.AreFilesApproved) (not (call .ap.ManuallyApproved))) }}open{{end}}>
 Needs approval from an approver in each of these OWNERS Files:
