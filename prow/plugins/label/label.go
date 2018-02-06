@@ -31,8 +31,8 @@ import (
 const pluginName = "label"
 
 var (
-	labelRegex              = regexp.MustCompile(`(?m)^/(area|committee|kind|priority|sig)\s*(.*)$`)
-	removeLabelRegex        = regexp.MustCompile(`(?m)^/remove-(area|committee|kind|priority|sig)\s*(.*)$`)
+	labelRegex              = regexp.MustCompile(`(?m)^/(area|committee|kind|priority|sig|branch|queue|version)\s*(.*)$`)
+	removeLabelRegex        = regexp.MustCompile(`(?m)^/remove-(area|committee|kind|priority|sig|branch|queue|version)\s*(.*)$`)
 	nonExistentLabelOnIssue = "Those labels are not set on the issue: `%v`"
 )
 
@@ -45,7 +45,7 @@ func helpProvider(config *plugins.Configuration, enabledRepos []string) (*plugin
 	return &pluginhelp.PluginHelp{
 			Description: "The label plugin provides commands that add or remove certain types of labels. Labels of the following types can be manipulated: 'area/*', 'committee/*', 'kind/*', 'priority/*' and 'sig/*'.",
 			WhoCanUse:   "Anyone can trigger this plugin on a PR.",
-			Usage:       "/[remove-](area|committee|kind|priority|sig) <target>",
+			Usage:       "/[remove-](area|committee|kind|priority|sig|branch|queue|version) <target>",
 			Examples:    []string{"/kind bug", "/remove-area prow", "/sig testing"},
 		},
 		nil
