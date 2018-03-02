@@ -17,6 +17,7 @@ limitations under the License.
 package label
 
 import (
+	"flag"
 	"fmt"
 	"regexp"
 	"strings"
@@ -31,8 +32,9 @@ import (
 const pluginName = "label"
 
 var (
-	labelRegex              = regexp.MustCompile(`(?m)^/(area|committee|kind|priority|sig|branch|queue|version)\s*(.*)$`)
-	removeLabelRegex        = regexp.MustCompile(`(?m)^/remove-(area|committee|kind|priority|sig|branch|queue|version)\s*(.*)$`)
+	labelRegex              = regexp.MustCompile(`(?m)^/(area|committee|kind|priority|sig|branch|queue|version|scrum)\s*(.*)$`)
+	removeLabelRegex        = regexp.MustCompile(`(?m)^/remove-(area|committee|kind|priority|sig|branch|queue|version|scrum)\s*(.*)$`)
+	singleChoice            = flag.String("single-choice", "priority,queue,scrum", "Comma separated list of command that needs support single-choice")
 	nonExistentLabelOnIssue = "Those labels are not set on the issue: `%v`"
 )
 
@@ -121,6 +123,22 @@ func handle(gc githubClient, log *logrus.Entry, e *github.GenericCommentEvent) e
 		if _, ok := existingLabels[labelToAdd]; !ok {
 			nonexistent = append(nonexistent, labelToAdd)
 			continue
+		}
+
+		prefixes := strings.Split(*singleChoice, ",")
+		prefixesMap := map[string]string{}
+		for _, p := range prefixes {
+			prefixesMap[strings.ToLower(p)] = p
+		}
+
+		labelPrefix := strings.Split(labelToAdd, "/")
+		for _, label := range labels {
+			if _, ok := prefixesMap[labelPrefix[0]]; !ok && strings.HasPrefix(label.Name, labelPrefix[0]) {
+				if err := gc.RemoveLabel(org, repo, e.Number, label.Name); err != nil {
+					log.WithError(err).Errorf("Github failed to remove the following label: %s", label.Name)
+				}
+				break
+			}
 		}
 
 		if err := gc.AddLabel(org, repo, e.Number, existingLabels[labelToAdd]); err != nil {
