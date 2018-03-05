@@ -28,7 +28,7 @@ import (
 	"k8s.io/test-infra/prow/plugins"
 )
 
-const deprecatedWarn = true
+const deprecatedWarn = false
 
 var (
 	deprecatedTick = time.Tick(time.Hour) // Warn once per hour
