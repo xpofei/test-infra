@@ -129,7 +129,7 @@ func handle(gc githubClient, log *logrus.Entry, e *github.GenericCommentEvent) e
 
 		labelPrefix := strings.Split(labelToAdd, "/")
 		for _, label := range labels {
-			if _, ok := prefixesMap[labelPrefix[0]]; !ok && strings.HasPrefix(label.Name, labelPrefix[0]) {
+			if _, ok := prefixesMap[labelPrefix[0]]; ok && strings.HasPrefix(label.Name, labelPrefix[0]) {
 				if err := gc.RemoveLabel(org, repo, e.Number, label.Name); err != nil {
 					log.WithError(err).Errorf("Github failed to remove the following label: %s", label.Name)
 				}
