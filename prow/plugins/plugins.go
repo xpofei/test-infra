@@ -17,8 +17,10 @@ limitations under the License.
 package plugins
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -155,16 +157,17 @@ type Configuration struct {
 	Owners Owners `json:"owners,omitempty"`
 
 	// Built-in plugins specific configuration.
-	Triggers        []Trigger       `json:"triggers,omitempty"`
-	Heart           Heart           `json:"heart,omitempty"`
-	MilestoneStatus MilestoneStatus `json:"milestonestatus,omitempty"`
-	Slack           Slack           `json:"slack,omitempty"`
-	ConfigUpdater   ConfigUpdater   `json:"config_updater,omitempty"`
-	Blockades       []Blockade      `json:"blockades,omitempty"`
-	Approve         []Approve       `json:"approve,omitempty"`
-	Blunderbuss     Blunderbuss     `json:"blunderbuss,omitempty"`
-	RequireSIG      RequireSIG      `json:"requiresig,omitempty"`
-	SigMention      SigMention      `json:"sigmention,omitempty"`
+	Triggers      []Trigger     `json:"triggers,omitempty"`
+	Heart         Heart         `json:"heart,omitempty"`
+	Milestone     Milestone     `json:"milestone,omitempty"`
+	Slack         Slack         `json:"slack,omitempty"`
+	ConfigUpdater ConfigUpdater `json:"config_updater,omitempty"`
+	Blockades     []Blockade    `json:"blockades,omitempty"`
+	Approve       []Approve     `json:"approve,omitempty"`
+	Blunderbuss   Blunderbuss   `json:"blunderbuss,omitempty"`
+	RequireSIG    RequireSIG    `json:"requiresig,omitempty"`
+	SigMention    SigMention    `json:"sigmention,omitempty"`
+	Cat           Cat           `json:"cat,omitempty"`
 }
 
 // ExternalPlugin holds configuration for registering an external
@@ -182,9 +185,14 @@ type ExternalPlugin struct {
 }
 
 type Blunderbuss struct {
-	// ReviewerCount is the number of reviewers to request reviews from.
-	// A value of 0 will default to requesting reviews from 2 reviewers.
-	ReviewerCount int `json:"request_count,omitempty"`
+	// ReviewerCount is the minimum number of reviewers to request
+	// reviews from. Defaults to requesting reviews from 2 reviewers
+	// if none of the given options is set.
+	ReviewerCount *int `json:"request_count,omitempty"`
+	// FileWeightCount is the maximum number of reviewers to request
+	// reviews from. Selects reviewers based on file weighting.
+	// This and request_count are mutually exclusive options.
+	FileWeightCount *int `json:"file_weight_count,omitempty"`
 }
 
 // Owners contains configuration related to handling OWNERS files.
@@ -222,11 +230,25 @@ type RequireSIG struct {
 	GroupListURL string `json:"group_list_url,omitempty"`
 }
 
+// SigMention specifies configuration for the sigmention plugin.
 type SigMention struct {
-	// OwningOrg is the org whose teams will map to SIG labels.
-	// Mentions of owning_org teams (@owning_org/sig-team-name) will trigger
-	// labeling of issues/PRs.
-	OwningOrg string `json:"owning_org,omitempty"`
+	// Regexp parses comments and should return matches to team mentions.
+	// These mentions enable labeling issues or PRs with sig/team labels.
+	// Furthermore, teams with the following suffixes will be mapped to
+	// kind/* labels:
+	//
+	// * @org/team-bugs             --maps to--> kind/bug
+	// * @org/team-feature-requests --maps to--> kind/feature
+	// * @org/team-api-reviews      --maps to--> kind/api-change
+	// * @org/team-proposals        --maps to--> kind/design
+	//
+	// Note that you need to make sure your regexp covers the above
+	// mentions if you want to use the extra labeling. Defaults to:
+	// (?m)@kubernetes/sig-([\w-]*)-(misc|test-failures|bugs|feature-requests|proposals|pr-reviews|api-reviews)
+	//
+	// Compiles into Re during config load.
+	Regexp string         `json:"regexp,omitempty"`
+	Re     *regexp.Regexp `json:"-"`
 }
 
 /*
@@ -276,6 +298,11 @@ type Approve struct {
 	ImplicitSelfApprove bool `json:"implicit_self_approve,omitempty"`
 }
 
+type Cat struct {
+	// Path to file containing an api key for thecatapi.com
+	KeyPath string `json:"key_path,omitempty"`
+}
+
 type Trigger struct {
 	// Repos is either of the form org/repos or just org.
 	Repos []string `json:"repos,omitempty"`
@@ -294,13 +321,15 @@ type Heart struct {
 	Adorees []string `json:"adorees,omitempty"`
 }
 
-// MilestoneStatus contains the configuration options for the milestonestatus plugin.
-type MilestoneStatus struct {
+// Milestone contains the configuration options for the milestone and
+// milestonestatus plugins.
+type Milestone struct {
 	// ID of the github team for the milestone maintainers (used for setting status labels)
 	// You can curl the following endpoint in order to determine the github ID of your team
 	// responsible for maintaining the milestones:
 	// curl -H "Authorization: token <token>" https://api.github.com/orgs/<org-name>/teams
-	MaintainersID int `json:"maintainers_id,omitempty"`
+	MaintainersID   int    `json:"maintainers_id,omitempty"`
+	MaintainersTeam string `json:"maintainers_team,omitempty"`
 }
 
 type Slack struct {
@@ -309,6 +338,11 @@ type Slack struct {
 }
 
 type ConfigUpdater struct {
+	// A map of filename => configmap name.
+	// Whenever a commit changes filename, prow will update the corresponding configmap.
+	// map[string]string{ "/my/path.yaml": "foo" } will result in
+	// replacing the foo configmap whenever path.yaml changes
+	Maps map[string]string `json:"maps,omitempty"`
 	// The location of the prow configuration file inside the repository
 	// where the config-updater plugin is enabled. This needs to be relative
 	// to the root of the repository, eg. "prow/config.yaml" will match
@@ -350,11 +384,23 @@ func (c *Configuration) TriggerFor(org, repo string) *Trigger {
 }
 
 func (c *Configuration) setDefaults() {
-	if c.ConfigUpdater.ConfigFile == "" {
-		c.ConfigUpdater.ConfigFile = "prow/config.yaml"
-	}
-	if c.ConfigUpdater.PluginFile == "" {
-		c.ConfigUpdater.PluginFile = "prow/plugins.yaml"
+	if len(c.ConfigUpdater.Maps) == 0 {
+		cf := c.ConfigUpdater.ConfigFile
+		if cf == "" {
+			cf = "prow/config.yaml"
+		} else {
+			logrus.Warnf(`config_file is deprecated, please switch to "maps": {"%s": "config"} before July 2018`, cf)
+		}
+		pf := c.ConfigUpdater.PluginFile
+		if pf == "" {
+			pf = "prow/plugins.yaml"
+		} else {
+			logrus.Warnf(`plugin_file is deprecated, please switch to "maps": {"%s": "plugins"} before July 2018`, pf)
+		}
+		c.ConfigUpdater.Maps = map[string]string{
+			cf: "config",
+			pf: "plugins",
+		}
 	}
 	for repo, plugins := range c.ExternalPlugins {
 		for i, p := range plugins {
@@ -364,8 +410,9 @@ func (c *Configuration) setDefaults() {
 			c.ExternalPlugins[repo][i].Endpoint = fmt.Sprintf("http://%s", p.Name)
 		}
 	}
-	if c.Blunderbuss.ReviewerCount == 0 {
-		c.Blunderbuss.ReviewerCount = defaultBlunderbussReviewerCount
+	if c.Blunderbuss.ReviewerCount == nil && c.Blunderbuss.FileWeightCount == nil {
+		c.Blunderbuss.ReviewerCount = new(int)
+		*c.Blunderbuss.ReviewerCount = defaultBlunderbussReviewerCount
 	}
 	for i, trigger := range c.Triggers {
 		if trigger.TrustedOrg == "" || trigger.JoinOrgURL != "" {
@@ -373,8 +420,8 @@ func (c *Configuration) setDefaults() {
 		}
 		c.Triggers[i].JoinOrgURL = fmt.Sprintf("https://github.com/orgs/%s/people", trigger.TrustedOrg)
 	}
-	if c.SigMention.OwningOrg == "" {
-		c.SigMention.OwningOrg = "kubernetes"
+	if c.SigMention.Regexp == "" {
+		c.SigMention.Regexp = `(?m)@kubernetes/sig-([\w-]*)-(misc|test-failures|bugs|feature-requests|proposals|pr-reviews|api-reviews)`
 	}
 }
 
@@ -400,6 +447,13 @@ func (pa *PluginAgent) Load(path string) error {
 		return err
 	}
 	if err := validateExternalPlugins(np.ExternalPlugins); err != nil {
+		return err
+	}
+	if err := validateBlunderbuss(&np.Blunderbuss); err != nil {
+		return err
+	}
+	// regexp compilation should run after defaulting
+	if err := compileRegexps(np); err != nil {
 		return err
 	}
 
@@ -479,6 +533,28 @@ func validateExternalPlugins(pluginMap map[string][]ExternalPlugin) error {
 	if len(errors) > 0 {
 		return fmt.Errorf("invalid plugin configuration:\n\t%v", strings.Join(errors, "\n\t"))
 	}
+	return nil
+}
+
+func validateBlunderbuss(b *Blunderbuss) error {
+	if b.ReviewerCount != nil && b.FileWeightCount != nil {
+		return errors.New("cannot use both request_count and file_weight_count in blunderbuss")
+	}
+	if b.ReviewerCount != nil && *b.ReviewerCount < 1 {
+		return fmt.Errorf("invalid request_count: %v (needs to be positive)", *b.ReviewerCount)
+	}
+	if b.FileWeightCount != nil && *b.FileWeightCount < 1 {
+		return fmt.Errorf("invalid file_weight_count: %v (needs to be positive)", *b.FileWeightCount)
+	}
+	return nil
+}
+
+func compileRegexps(pc *Configuration) error {
+	cRe, err := regexp.Compile(pc.SigMention.Regexp)
+	if err != nil {
+		return err
+	}
+	pc.SigMention.Re = cRe
 	return nil
 }
 

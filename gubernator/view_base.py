@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import cPickle as pickle
 import functools
 import logging
 import os
@@ -56,6 +57,15 @@ class BaseHandler(webapp2.RequestHandler):
         # The default deadline of 5 seconds is too aggressive of a target for GCS
         # directory listing operations.
         urlfetch.set_default_fetch_deadline(60)
+
+    def check_csrf(self):
+        # https://www.owasp.org/index.php/Cross-Site_Request_Forgery_(CSRF)_Prevention_Cheat_Sheet
+        #     #Checking_The_Referer_Header
+        origin = self.request.headers.get('origin') + '/'
+        expected = self.request.host_url + '/'
+        if not (origin and origin == expected):
+            logging.error('csrf check failed for %s, origin: %r', self.request.url, origin)
+            self.abort(403)
 
     # This example code is from:
     # http://webapp2.readthedocs.io/en/latest/api/webapp2_extras/sessions.html
@@ -120,6 +130,11 @@ def memcache_memoize(prefix, expires=60 * 60, neg_expires=60):
                 return data
             else:
                 data = func(*args)
+                serialized_length = len(pickle.dumps(data, pickle.HIGHEST_PROTOCOL))
+                if serialized_length > 1000000:
+                    logging.warning('data too large to fit in memcache: %s > 1MB',
+                                    serialized_length)
+                    return data
                 try:
                     if data:
                         memcache.add(key, data, expires, namespace=namespace)

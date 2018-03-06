@@ -17,19 +17,25 @@ limitations under the License.
 package kube
 
 import (
+	"bufio"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"io/ioutil"
 	"math/big"
 	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
 	"testing"
 	"time"
+
+	"k8s.io/api/core/v1"
 )
 
 func getClient(url string) *Client {
@@ -74,7 +80,7 @@ func TestSetHiddenReposProviderGet(t *testing.T) {
 	}))
 	defer ts.Close()
 	c := getClient(ts.URL)
-	c.SetHiddenReposProvider(func() []string { return []string{"hidden-org"} })
+	c.SetHiddenReposProvider(func() []string { return []string{"hidden-org"} }, false)
 	pj, err := c.GetProwJob("pja")
 	if err != nil {
 		t.Errorf("Didn't expect error: %v", err)
@@ -86,6 +92,32 @@ func TestSetHiddenReposProviderGet(t *testing.T) {
 	pj, err = c.GetProwJob("pjb")
 	if err == nil {
 		t.Fatal("Expected error getting hidden prowjob, but did not receive an error.")
+	}
+}
+
+func TestHiddenReposProviderGet(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Bad method: %s", r.Method)
+		}
+		switch r.URL.Path {
+		case "/apis/prow.k8s.io/v1/namespaces/ns/prowjobs/pja":
+			fmt.Fprint(w, `{"spec": {"job": "a", "refs": {"org": "org", "repo": "repo"}}}`)
+		case "/apis/prow.k8s.io/v1/namespaces/ns/prowjobs/pjb":
+			fmt.Fprint(w, `{"spec": {"job": "b", "refs": {"org": "hidden-org", "repo": "repo"}}}`)
+		default:
+			t.Errorf("Bad request path: %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+	c := getClient(ts.URL)
+	c.SetHiddenReposProvider(func() []string { return []string{"hidden-org"} }, true)
+	pj, err := c.GetProwJob("pjb")
+	if err != nil {
+		t.Errorf("Didn't expect error: %v", err)
+	}
+	if got, expected := pj.Spec.Job, "b"; got != expected {
+		t.Errorf("Expected returned prowjob to be job %q, but got %q.", expected, got)
 	}
 }
 
@@ -101,7 +133,7 @@ func TestSetHiddenReposProviderList(t *testing.T) {
 	}))
 	defer ts.Close()
 	c := getClient(ts.URL)
-	c.SetHiddenReposProvider(func() []string { return []string{"org/hidden-repo"} })
+	c.SetHiddenReposProvider(func() []string { return []string{"org/hidden-repo"} }, false)
 	pjs, err := c.ListProwJobs(EmptySelector)
 	if err != nil {
 		t.Errorf("Didn't expect error: %v", err)
@@ -110,6 +142,31 @@ func TestSetHiddenReposProviderList(t *testing.T) {
 		t.Fatalf("Expected one prowjobs, but got %v.", pjs)
 	}
 	if got, expected := pjs[0].Spec.Job, "b"; got != expected {
+		t.Errorf("Expected returned prowjob to be job %q, but got %q.", expected, got)
+	}
+}
+
+func TestHiddenReposProviderList(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("Bad method: %s", r.Method)
+		}
+		if r.URL.Path != "/apis/prow.k8s.io/v1/namespaces/ns/prowjobs" {
+			t.Errorf("Bad request path: %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"items": [{"spec": {"job": "a", "refs": {"org": "org", "repo": "hidden-repo"}}}, {"spec": {"job": "b", "refs": {"org": "org", "repo": "repo"}}}]}`)
+	}))
+	defer ts.Close()
+	c := getClient(ts.URL)
+	c.SetHiddenReposProvider(func() []string { return []string{"org/hidden-repo"} }, true)
+	pjs, err := c.ListProwJobs(EmptySelector)
+	if err != nil {
+		t.Errorf("Didn't expect error: %v", err)
+	}
+	if len(pjs) != 1 {
+		t.Fatalf("Expected one prowjobs, but got %v.", pjs)
+	}
+	if got, expected := pjs[0].Spec.Job, "a"; got != expected {
 		t.Errorf("Expected returned prowjob to be job %q, but got %q.", expected, got)
 	}
 }
@@ -168,8 +225,8 @@ func TestGetPod(t *testing.T) {
 	if err != nil {
 		t.Errorf("Didn't expect error: %v", err)
 	}
-	if po.Metadata.Name != "abcd" {
-		t.Errorf("Wrong name: %s", po.Metadata.Name)
+	if po.ObjectMeta.Name != "abcd" {
+		t.Errorf("Wrong name: %s", po.ObjectMeta.Name)
 	}
 }
 
@@ -185,12 +242,12 @@ func TestCreatePod(t *testing.T) {
 	}))
 	defer ts.Close()
 	c := getClient(ts.URL)
-	po, err := c.CreatePod(Pod{})
+	po, err := c.CreatePod(v1.Pod{})
 	if err != nil {
 		t.Errorf("Didn't expect error: %v", err)
 	}
-	if po.Metadata.Name != "abcd" {
-		t.Errorf("Wrong name: %s", po.Metadata.Name)
+	if po.ObjectMeta.Name != "abcd" {
+		t.Errorf("Wrong name: %s", po.ObjectMeta.Name)
 	}
 }
 
@@ -313,5 +370,107 @@ func TestNewClient(t *testing.T) {
 	}
 	if _, err := cl.GetPod("p"); err != nil {
 		t.Fatalf("Failed to talk to server: %v", err)
+	}
+}
+
+type tempConfig struct {
+	file   *os.File
+	writer *bufio.Writer
+}
+
+func newTempConfig() (*tempConfig, error) {
+	tempfile, err := ioutil.TempFile(os.TempDir(), "prow_kube_client_test")
+	if err != nil {
+		return nil, err
+	}
+	return &tempConfig{file: tempfile, writer: bufio.NewWriter(tempfile)}, nil
+}
+
+func (t *tempConfig) SetContent(content string) error {
+	// Clear file and reset writing offset
+	t.file.Truncate(0)
+	t.file.Seek(0, os.SEEK_SET)
+	t.writer.Reset(t.file)
+	if _, err := t.writer.WriteString(content); err != nil {
+		return err
+	}
+	if err := t.writer.Flush(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *tempConfig) Clean() {
+	t.file.Close()
+	os.Remove(t.file.Name())
+}
+
+func TestClientMapFromFile(t *testing.T) {
+	newClient = func(c *Cluster, namespace string) (*Client, error) {
+		return &Client{baseURL: c.Endpoint}, nil
+	}
+	defer func() { newClient = NewClient }()
+
+	temp, err := newTempConfig()
+	if err != nil {
+		t.Fatalf("Failed to create temp file for test: %v", err)
+	}
+	defer temp.Clean()
+
+	testCases := []struct {
+		name           string
+		configContents string
+		expectedMap    map[string]*Client
+	}{
+		{
+			name: "single cluster config",
+			configContents: `endpoint: "cluster1"
+clientKey: "key1"
+`,
+			expectedMap: map[string]*Client{
+				DefaultClusterAlias: {baseURL: "cluster1"},
+			},
+		},
+		{
+			name: "multi cluster config",
+			configContents: `"default":
+  endpoint: "cluster1"
+  clientKey: "key1"
+"trusted":
+  endpoint: "cluster2"
+  clientKey: "key2"
+`,
+			expectedMap: map[string]*Client{
+				DefaultClusterAlias: {baseURL: "cluster1"},
+				"trusted":           {baseURL: "cluster2"},
+			},
+		},
+		{
+			name: "multi cluster config missing 'default' key",
+			configContents: `"untrusted":
+  endpoint: "cluster1"
+  clientKey: "key1"
+"trusted":
+  endpoint: "cluster2"
+  clientKey: "key2"
+`,
+			expectedMap: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Logf("Running test scenario %q...", tc.name)
+		if err := temp.SetContent(tc.configContents); err != nil {
+			t.Fatalf("Error setting temp file contents: %v", err)
+		}
+		m, err := ClientMapFromFile(temp.file.Name(), "ns")
+		if err != nil && tc.expectedMap != nil {
+			t.Fatalf("Unexpected error loading config: %v.", err)
+		} else if err == nil && tc.expectedMap == nil {
+			t.Fatal("Expected an error loading the config, but did not receive one!")
+		}
+		if expect, got := tc.expectedMap, m; !reflect.DeepEqual(expect, got) {
+			t.Errorf("Expected cluster config to produce map %v, but got %v.", expect, got)
+		}
 	}
 }

@@ -19,7 +19,9 @@ package kube
 import (
 	"fmt"
 	"strings"
-	"time"
+
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type ProwJobType string
@@ -68,41 +70,72 @@ const (
 )
 
 type ProwJob struct {
-	APIVersion string        `json:"apiVersion,omitempty"`
-	Kind       string        `json:"kind,omitempty"`
-	Metadata   ObjectMeta    `json:"metadata,omitempty"`
-	Spec       ProwJobSpec   `json:"spec,omitempty"`
-	Status     ProwJobStatus `json:"status,omitempty"`
+	APIVersion        string `json:"apiVersion,omitempty"`
+	Kind              string `json:"kind,omitempty"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   ProwJobSpec   `json:"spec,omitempty"`
+	Status ProwJobStatus `json:"status,omitempty"`
 }
 
 type ProwJobSpec struct {
-	Type  ProwJobType  `json:"type,omitempty"`
-	Agent ProwJobAgent `json:"agent,omitempty"`
-	Job   string       `json:"job,omitempty"`
-	Refs  Refs         `json:"refs,omitempty"`
+	Type    ProwJobType  `json:"type,omitempty"`
+	Agent   ProwJobAgent `json:"agent,omitempty"`
+	Cluster string       `json:"cluster,omitempty"`
+	Job     string       `json:"job,omitempty"`
+	Refs    Refs         `json:"refs,omitempty"`
 
 	Report         bool   `json:"report,omitempty"`
 	Context        string `json:"context,omitempty"`
 	RerunCommand   string `json:"rerun_command,omitempty"`
 	MaxConcurrency int    `json:"max_concurrency,omitempty"`
 
-	PodSpec PodSpec `json:"pod_spec,omitempty"`
+	PodSpec v1.PodSpec `json:"pod_spec,omitempty"`
 
 	RunAfterSuccess []ProwJobSpec `json:"run_after_success,omitempty"`
 }
 
 type ProwJobStatus struct {
-	StartTime      time.Time    `json:"startTime,omitempty"`
-	CompletionTime time.Time    `json:"completionTime,omitempty"`
+	StartTime      metav1.Time  `json:"startTime,omitempty"`
+	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 	State          ProwJobState `json:"state,omitempty"`
 	Description    string       `json:"description,omitempty"`
 	URL            string       `json:"url,omitempty"`
-	PodName        string       `json:"pod_name,omitempty"`
-	BuildID        string       `json:"build_id,omitempty"`
+
+	// PodName applies only to ProwJobs fulfilled by
+	// plank. This field should always be the same as
+	// the ProwJob.ObjectMeta.Name field.
+	PodName string `json:"pod_name,omitempty"`
+
+	// BuildID is the build identifier vended either by tot
+	// or the snowflake library for this job and used as an
+	// identifier for grouping artifacts in GCS for views in
+	// TestGrid and Gubernator. Idenitifiers vended by tot
+	// are monotonically increasing whereas identifiers vended
+	// by the snowflake library are not.
+	BuildID string `json:"build_id,omitempty"`
+
+	// JenkinsBuildID applies only to ProwJobs fulfilled
+	// by the jenkins-operator. This field is the build
+	// identifier that Jenkins gave to the build for this
+	// ProwJob.
+	JenkinsBuildID string `json:"jenkins_build_id,omitempty"`
 }
 
 func (j *ProwJob) Complete() bool {
-	return !j.Status.CompletionTime.IsZero()
+	return j.Status.CompletionTime != nil
+}
+
+func (j *ProwJob) SetComplete() {
+	j.Status.CompletionTime = new(metav1.Time)
+	*j.Status.CompletionTime = metav1.Now()
+}
+
+func (j *ProwJob) ClusterAlias() string {
+	if j.Spec.Cluster == "" {
+		return DefaultClusterAlias
+	}
+	return j.Spec.Cluster
 }
 
 type Pull struct {

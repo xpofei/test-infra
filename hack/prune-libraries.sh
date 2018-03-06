@@ -24,59 +24,80 @@ set -o nounset
 set -o errexit
 set -o pipefail
 
-# Output every go_library rule in the repo
-find-go-libraries() {
-  # Excluding generated //foo:go_default_library~library~
-  bazel query \
-    'kind("go_library rule", //...)' \
-    except 'attr("name", ".*~library~", //...)'
+# This list is used for rules in vendor/ which may not have any explicit
+# dependencies outside of vendor, e.g. helper commands we have vendored.
+# It should probably match the list in Gopkg.toml.
+REQUIRED=(
+  //vendor/github.com/golang/dep/cmd/dep:dep
+  //vendor/github.com/client9/misspell/cmd/misspell:misspell
+)
+
+# darwin is great
+SED=sed
+if which gsed &>/dev/null; then
+  SED=gsed
+fi
+if ! ($SED --version 2>&1 | grep -q GNU); then
+  echo "!!! GNU sed is required.  If on OS X, use 'brew install gnu-sed'." >&2
+  exit 1
+fi
+
+unused-go-libraries() {
+  # Find all the go_library rules in vendor except those that something outside
+  # of vendor eventually depends on.
+  required_items=( "${REQUIRED[@]/#/+ }" )
+  echo "Looking for //vendor targets that no one outside of //vendor depends on..." >&2
+  bazel query "kind('go_library rule', //vendor/... -deps(//... -//vendor/... ${required_items[@]}))"
 }
 
-# Output the target if it has only one dependency (itself)
-is-unused() {
-  local n
-  n="$(bazel query "rdeps(//..., \"$1\", 1)" | wc -l)"
-  if [[ "$n" -gt "1" ]]; then  # Always counts itself
-    echo "LIVE: $1" >&2
-    return 0
-  fi
-  echo "DEAD: $1" >&2
-  echo "$1"
-}
-
-# Filter down to unused targets
-filter-to-unused() {
-  for i in "$@"; do
-    is-unused "$i"
-  done
-}
-
-# Output sources used by target
+# Output this:source.go that:file.txt sources of //this //that targets
 target-sources() {
-  for i in "$@"; do
+  (for i in "$@"; do
     bazel query "kind(\"source file\", deps(\"$(package-name "$i"):package-srcs\", 1))"
+  done) | sort -u
+}
+
+sources() {
+  local t
+  for j in $(target-sources "${@}"); do
+    case "$(target-name "$j")" in
+      LICENSE*|PATENTS*|*.md)  # Keep these files
+        continue
+        ;;
+    esac
+    echo $(package-name "${j:2}")/$(target-name $j)
   done
 }
 
-# Convert //foo/bar:stuff to //foo/bar
+# Convert //foo:and/bar:stuff to //foo:and/bar
 package-name() {
-  echo $1 | cut -d : -f 1
+  echo ${1%:*}
+}
+
+# Convert //foo:and/bar:stuff to stuff
+target-name() {
+  echo ${1##*:}
 }
 
 # Find every package that directly depends on //foo:all-srcs
 all-srcs-refs() {
-  build-files $(for i in "$@"; do
-    local package
-    package="$(dirname "$i")"
-    bazel query "rdeps(//..., \"${package}:all-srcs\", 1)"
+  packages $(for i in "$@"; do
+    bazel query "rdeps(//..., \"${i}:all-srcs\", 1)"
   done)
 }
 
-# Convert //foo/bar:stuff to //foo/bar/BUILD
-build-files() {
+# Convert //foo/bar:stuff //this //foo/bar:stuff to //foo/bar //this
+packages() {
   (for i in "$@"; do
-    echo $(package-name "$i")/BUILD
+    echo $(package-name "${i}")
   done) | sort -u
+}
+
+# Convert //foo //bar to foo/BUILD bar/BUILD.bazel (whichever exist)
+builds() {
+  for i in "${@}"; do
+    echo $(ls ${i:2}/{BUILD,BUILD.bazel} 2>/dev/null)
+  done
 }
 
 # Remove lines with //something:all-srcs from files
@@ -84,19 +105,7 @@ build-files() {
 #   remove-all-srcs <targets-to-remove> <remove-from-packages>
 remove-all-srcs() {
   for b in $1; do
-    sed -i -e "\|$(dirname "$b"):all-srcs|d" $(to-path $2)
-  done
-}
-
-# For each arg //foo/bar:whatever.sh becomes foo/bar/whatever.sh
-to-path() {
-  for i in "$@"; do
-    # Format is //foo/bar:whatever.sh
-    # Output foo/bar/whatever.sh
-    local base dir
-    base=$(basename $i)
-    dir=$(dirname $i)
-    echo "${dir:2}/${base/:/\/}"
+    $SED -i -e "\|${b}:all-srcs|d" $(builds $2)
   done
 }
 
@@ -105,30 +114,31 @@ remove_unused_go_libraries_finished=
 # Remove every go_library() target from workspace with no one depending on it.
 remove-unused-go-libraries() {
   local libraries deps
-  libraries="$(find-go-libraries | sort -u)"
-  deps="$(filter-to-unused $libraries)"
+  deps="$(unused-go-libraries)"
   if [[ -z "$deps" ]]; then
     echo "All remaining go libraries are alive" >&2
     remove_unused_go_libraries_finished=true
     return 0
-  elif [[ "$1" == "--check" || "$1" != "--fix" ]]; then
-    echo "Found unused libraries:" >&2
-    for d in $deps; do
-      echo $d
-    done
+  fi
+  echo "Unused libraries:" >&2
+  for d in $deps; do
+    echo "  DEAD: $d" >&2
+  done
+  if [[ "$1" == "--check" || "$1" != "--fix" ]]; then
+    echo "Correct with $0 --fix" >&2
     exit 1
   else
     echo Cleaning up unused dependencies... >&2
   fi
-  local builds files ref_builds
-  builds=$(build-files $deps)
-  files=$(target-sources $deps)
-  ref_builds=$(all-srcs-refs $builds)
+  local unused_packs unused_files all_srcs_packs
+  unused_packs=$(packages $deps)
+  unused_files=$(sources $deps)
+  # Packages with //unused-package:all-srcs references
+  all_srcs_packs=$(all-srcs-refs $unused_packs)
 
   pushd "$(dirname ${BASH_SOURCE})/.."
-  remove-all-srcs "$builds" "$ref_builds"
-  git rm $(to-path $files | sort -u)
-  git rm -f $(to-path $builds | sort -u)
+  remove-all-srcs "$unused_packs" "$all_srcs_packs"
+  rm -f $unused_files $(builds $unused_packs)
   popd
 }
 

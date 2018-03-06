@@ -18,8 +18,15 @@ package pjutil
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/ioutil"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
 	"strconv"
+	"time"
 
 	"k8s.io/test-infra/prow/kube"
 )
@@ -30,9 +37,10 @@ import (
 //  - the full spec, in serialized JSON in one variable
 //  - individual fields of the spec in their own variables
 type JobSpec struct {
-	Type    kube.ProwJobType `json:"type,omitempty"`
-	Job     string           `json:"job,omitempty"`
-	BuildId string           `json:"buildid,omitempty"`
+	Type      kube.ProwJobType `json:"type,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	BuildId   string           `json:"buildid,omitempty"`
+	ProwJobId string           `json:"prowjobid,omitempty"`
 
 	Refs kube.Refs `json:"refs,omitempty"`
 
@@ -42,23 +50,60 @@ type JobSpec struct {
 	agent kube.ProwJobAgent
 }
 
-func NewJobSpec(spec kube.ProwJobSpec, buildId string) JobSpec {
+func NewJobSpec(spec kube.ProwJobSpec, buildId, prowJobId string) JobSpec {
 	return JobSpec{
-		Type:    spec.Type,
-		Job:     spec.Job,
-		BuildId: buildId,
-		Refs:    spec.Refs,
-		agent:   spec.Agent,
+		Type:      spec.Type,
+		Job:       spec.Job,
+		BuildId:   buildId,
+		ProwJobId: prowJobId,
+		Refs:      spec.Refs,
+		agent:     spec.Agent,
 	}
+}
+
+// GetBuildID calls out to `tot` in order
+// to vend build identifier for the job
+func GetBuildID(name, totURL string) (string, error) {
+	var err error
+	url, err := url.Parse(totURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid tot url: %v", err)
+	}
+	url.Path = path.Join(url.Path, "vend", name)
+	sleep := 100 * time.Millisecond
+	for retries := 0; retries < 10; retries++ {
+		if retries > 0 {
+			time.Sleep(sleep)
+			sleep = sleep * 2
+		}
+		var resp *http.Response
+		resp, err = http.Get(url.String())
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			err = fmt.Errorf("got unexpected response from tot: %v", resp.Status)
+			continue
+		}
+		var buf []byte
+		buf, err = ioutil.ReadAll(resp.Body)
+		if err == nil {
+			return string(buf), nil
+		}
+		return "", err
+	}
+	return "", err
 }
 
 // EnvForSpec returns a mapping of environment variables
 // to their values that should be available for a job spec
 func EnvForSpec(spec JobSpec) (map[string]string, error) {
 	env := map[string]string{
-		"JOB_NAME": spec.Job,
-		"BUILD_ID": spec.BuildId,
-		"JOB_TYPE": string(spec.Type),
+		"JOB_NAME":    spec.Job,
+		"BUILD_ID":    spec.BuildId,
+		"PROW_JOB_ID": spec.ProwJobId,
+		"JOB_TYPE":    string(spec.Type),
 	}
 
 	// for backwards compatibility, we provide the build ID
@@ -91,4 +136,20 @@ func EnvForSpec(spec JobSpec) (map[string]string, error) {
 	env["PULL_NUMBER"] = strconv.Itoa(spec.Refs.Pulls[0].Number)
 	env["PULL_PULL_SHA"] = spec.Refs.Pulls[0].SHA
 	return env, nil
+}
+
+// ResolveSpecFromEnv will determine the Refs being
+// tested in by parsing Prow environment variable contents
+func ResolveSpecFromEnv() (*JobSpec, error) {
+	specEnv, ok := os.LookupEnv("JOB_SPEC")
+	if !ok {
+		return nil, errors.New("$JOB_SPEC unset")
+	}
+
+	spec := &JobSpec{}
+	if err := json.Unmarshal([]byte(specEnv), spec); err != nil {
+		return nil, fmt.Errorf("malformed $JOB_SPEC: %v", err)
+	}
+
+	return spec, nil
 }
