@@ -1,19 +1,17 @@
-http_archive(
-    name = "io_kubernetes_build",
-    sha256 = "8e49ac066fbaadd475bd63762caa90f81cd1880eba4cc25faa93355ef5fa2739",
-    strip_prefix = "repo-infra-e26fc85d14a1d3dc25569831acc06919673c545a",
-    urls = ["https://github.com/kubernetes/repo-infra/archive/e26fc85d14a1d3dc25569831acc06919673c545a.tar.gz"],
+git_repository(
+    name = "bazel_skylib",
+    commit = "2169ae1c374aab4a09aa90e65efe1a3aad4e279b",
+    remote = "https://github.com/bazelbuild/bazel-skylib.git",
 )
 
-load("@io_kubernetes_build//defs:bazel_version.bzl", "check_version")
+load("@bazel_skylib//:lib.bzl", "versions")
 
-# Ensure minimum supported bazel version
-check_version("0.8.0")
+versions.check(minimum_bazel_version = "0.10.0")
 
 git_repository(
     name = "io_bazel_rules_go",
+    commit = "6b39964af66c98580be4c5ac6cf1d243332f78e4",
     remote = "https://github.com/bazelbuild/rules_go.git",
-    tag = "0.8.1",
 )
 
 load("@io_bazel_rules_go//go:def.bzl", "go_rules_dependencies", "go_register_toolchains")
@@ -21,14 +19,26 @@ load("@io_bazel_rules_go//go:def.bzl", "go_rules_dependencies", "go_register_too
 go_rules_dependencies()
 
 go_register_toolchains(
-    go_version = "1.9.2",
+    go_version = "1.9.3",
+)
+
+git_repository(
+    name = "io_bazel_rules_k8s",
+    commit = "3756369d4920033c32c12d16207e8ee14fee1b18",
+    remote = "https://github.com/bazelbuild/rules_k8s.git",
 )
 
 http_archive(
     name = "io_bazel_rules_docker",
-    sha256 = "c919051945ab388c8440ea92d7ceb429fdbbf0a53639e6e0159b231881ceed02",
-    strip_prefix = "rules_docker-3caf72f166f8b6b0e529442477a74871ad4d35e9",
-    urls = ["https://github.com/bazelbuild/rules_docker/archive/3caf72f166f8b6b0e529442477a74871ad4d35e9.tar.gz"],
+    sha256 = "cef4e7adfc1df999891e086bf42bed9092cfdf374adb902f18de2c1d6e1e0197",
+    strip_prefix = "rules_docker-198367210c55fba5dded22274adde1a289801dc4",
+    urls = ["https://github.com/bazelbuild/rules_docker/archive/198367210c55fba5dded22274adde1a289801dc4.tar.gz"],
+)
+
+git_repository(
+    name = "io_kubernetes_build",
+    commit = "4ce715fbe67d8fbed05ec2bb47a148e754100a4b",
+    remote = "https://github.com/kubernetes/repo-infra.git",
 )
 
 load("@io_bazel_rules_docker//docker:docker.bzl", "docker_repositories", "docker_pull")
@@ -66,15 +76,23 @@ docker_pull(
     repository = "k8s-prow/git",
 )
 
-git_repository(
-    name = "org_dropbox_rules_node",
-    commit = "4fe6494f3f8d1a272d47d32ecc66698f6c43ed09",
-    remote = "https://github.com/dropbox/rules_node.git",
+docker_pull(
+    name = "python",
+    digest = "sha256:8bfeec8f8ba3aaeea918a0198f4b1c7c9b2b39e26f399a7173229dfcef76fc1f",
+    registry = "index.docker.io",
+    repository = "library/python",
+    tag = "2.7.14-jessie",
 )
 
-load("@org_dropbox_rules_node//node:defs.bzl", "node_repositories")
+git_repository(
+    name = "build_bazel_rules_nodejs",
+    remote = "https://github.com/bazelbuild/rules_nodejs.git",
+    tag = "0.4.0",
+)
 
-node_repositories()
+load("@build_bazel_rules_nodejs//:defs.bzl", "node_repositories", "npm_install")
+
+node_repositories(package_json = ["//triage:package.json"])
 
 load(":test_infra.bzl", "http_archive_with_pkg_path")
 

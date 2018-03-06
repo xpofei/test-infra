@@ -27,10 +27,13 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
+
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	"k8s.io/test-infra/prow/config"
 	"k8s.io/test-infra/prow/kube"
+	"k8s.io/test-infra/prow/logrusutil"
 	"k8s.io/test-infra/prow/pjutil"
 )
 
@@ -41,6 +44,7 @@ var (
 	repoName       = flag.String("repo", "kubernetes", "Repo name")
 	configPath     = flag.String("config-path", "/etc/config/config", "Path to config.yaml.")
 	maxBatchSize   = flag.Int("batch-size", 5, "Maximum batch size")
+	alwaysRun      = flag.String("always-run", "", "Job names that should be treated as always_run: true in Splice")
 )
 
 // Call a binary and return its output and success status.
@@ -49,7 +53,7 @@ func call(binary string, args ...string) (string, error) {
 	for _, arg := range args {
 		cmdout += arg + " "
 	}
-	log.Info(cmdout)
+	logrus.Info(cmdout)
 
 	cmd := exec.Command(binary, args...)
 	output, err := cmd.CombinedOutput()
@@ -105,12 +109,13 @@ func makeSplicer() (*splicer, error) {
 		{"init"},
 		{"config", "--local", "user.name", "K8S Prow Splice"},
 		{"config", "--local", "user.email", "splice@localhost"},
+		{"config", "--local", "commit.gpgsign", "false"},
 	})
 	if err != nil {
 		s.cleanup()
 		return nil, err
 	}
-	log.Infof("Splicer created in %s.", dir)
+	logrus.Infof("Splicer created in %s.", dir)
 	return s, nil
 }
 
@@ -124,7 +129,7 @@ func (s *splicer) gitCall(args ...string) error {
 	fullArgs := append([]string{"-C", s.dir}, args...)
 	output, err := call("git", fullArgs...)
 	if len(output) > 0 {
-		log.Info(output)
+		logrus.Info(output)
 	}
 	return err
 }
@@ -228,10 +233,10 @@ func completedJobs(currentJobs []kube.ProwJob, refs kube.Refs) []kube.ProwJob {
 }
 
 // Filters to the list of required presubmits that report
-func requiredPresubmits(presubmits []config.Presubmit) []config.Presubmit {
+func requiredPresubmits(presubmits []config.Presubmit, alwaysRunOverride sets.String) []config.Presubmit {
 	var out []config.Presubmit
 	for _, job := range presubmits {
-		if !job.AlwaysRun { // Ignore manual jobs as these do not block
+		if !job.AlwaysRun && !alwaysRunOverride.Has(job.Name) { // Ignore manual jobs as these do not block
 			continue
 		}
 		if job.SkipReport { // Ignore silent jobs as these do not block
@@ -246,14 +251,14 @@ func requiredPresubmits(presubmits []config.Presubmit) []config.Presubmit {
 }
 
 // Filters to the list of required presubmit which have not already passed this commit
-func neededPresubmits(presubmits []config.Presubmit, currentJobs []kube.ProwJob, refs kube.Refs) []config.Presubmit {
+func neededPresubmits(presubmits []config.Presubmit, currentJobs []kube.ProwJob, refs kube.Refs, alwaysRunOverride sets.String) []config.Presubmit {
 	skippable := make(map[string]bool)
 	for _, job := range completedJobs(currentJobs, refs) {
 		skippable[job.Spec.Context] = true
 	}
 
 	var needed []config.Presubmit
-	for _, job := range requiredPresubmits(presubmits) {
+	for _, job := range requiredPresubmits(presubmits, alwaysRunOverride) {
 		if skippable[job.Context] {
 			continue
 		}
@@ -264,23 +269,28 @@ func neededPresubmits(presubmits []config.Presubmit, currentJobs []kube.ProwJob,
 
 func main() {
 	flag.Parse()
-	log.SetFormatter(&log.JSONFormatter{})
+	logrus.SetFormatter(
+		logrusutil.NewDefaultFieldsFormatter(nil, logrus.Fields{"component": "splice"}),
+	)
 
 	splicer, err := makeSplicer()
 	if err != nil {
-		log.WithError(err).Fatal("Could not make splicer.")
+		logrus.WithError(err).Fatal("Could not make splicer.")
 	}
 	defer splicer.cleanup()
 
 	configAgent := &config.Agent{}
 	if err := configAgent.Start(*configPath); err != nil {
-		log.WithError(err).Fatal("Error starting config agent.")
+		logrus.WithError(err).Fatal("Error starting config agent.")
 	}
 
 	kc, err := kube.NewClientInCluster(configAgent.Config().ProwJobNamespace)
 	if err != nil {
-		log.WithError(err).Fatal("Error getting kube client.")
+		logrus.WithError(err).Fatal("Error getting kube client.")
 	}
+
+	// get overridden always_run jobs
+	alwaysRunOverride := sets.NewString(strings.Split(*alwaysRun, ",")...)
 
 	cooldown := 0
 	// Loop endlessly, sleeping a minute between iterations
@@ -289,7 +299,7 @@ func main() {
 		// List batch jobs, only start a new one if none are active.
 		currentJobs, err := kc.ListProwJobs(kube.EmptySelector)
 		if err != nil {
-			log.WithError(err).Error("Error listing prow jobs.")
+			logrus.WithError(err).Error("Error listing prow jobs.")
 			continue
 		}
 
@@ -303,7 +313,7 @@ func main() {
 			}
 		}
 		if len(running) > 0 {
-			log.Infof("Waiting on %d jobs: %v", len(running), running)
+			logrus.Infof("Waiting on %d jobs: %v", len(running), running)
 			continue
 		}
 
@@ -316,17 +326,17 @@ func main() {
 
 		queue, err := getQueuedPRs(*submitQueueURL)
 		if err != nil {
-			log.WithError(err).Warning("Error getting queued PRs. Is the submit queue down?")
+			logrus.WithError(err).Warning("Error getting queued PRs. Is the submit queue down?")
 			continue
 		}
 		// No need to check for mergeable PRs if none is in the queue.
 		if len(queue) == 0 {
 			continue
 		}
-		log.Infof("PRs in queue: %v", queue)
+		logrus.Infof("PRs in queue: %v", queue)
 		batchPRs, err := splicer.findMergeable(*remoteURL, queue)
 		if err != nil {
-			log.WithError(err).Error("Error computing mergeable PRs.")
+			logrus.WithError(err).Error("Error computing mergeable PRs.")
 			continue
 		}
 		// No need to start batches for single PRs
@@ -337,15 +347,15 @@ func main() {
 		if len(batchPRs) > *maxBatchSize {
 			batchPRs = batchPRs[:*maxBatchSize]
 		}
-		log.Infof("Starting a batch for the following PRs: %v", batchPRs)
+		logrus.Infof("Starting a batch for the following PRs: %v", batchPRs)
 		refs := splicer.makeBuildRefs(*orgName, *repoName, batchPRs)
 		presubmits := configAgent.Config().Presubmits[fmt.Sprintf("%s/%s", *orgName, *repoName)]
-		for _, job := range neededPresubmits(presubmits, currentJobs, refs) {
+		for _, job := range neededPresubmits(presubmits, currentJobs, refs, alwaysRunOverride) {
 			if _, err := kc.CreateProwJob(pjutil.NewProwJob(pjutil.BatchSpec(job, refs), job.Labels)); err != nil {
-				log.WithError(err).WithField("job", job.Name).Error("Error starting batch job.")
+				logrus.WithError(err).WithField("job", job.Name).Error("Error starting batch job.")
 			}
 		}
 		cooldown = 5
-		log.Infof("Sync time: %v", time.Since(start))
+		logrus.Infof("Sync time: %v", time.Since(start))
 	}
 }

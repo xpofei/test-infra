@@ -18,8 +18,10 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
+
+	"k8s.io/test-infra/kubetest/dind"
+	"k8s.io/test-infra/kubetest/util"
 )
 
 const (
@@ -44,11 +46,11 @@ func (b *buildStrategy) Set(value string) error {
 		value = buildDefault
 	}
 	switch value {
-	case "bazel", "host-go", "quick", "release":
+	case "bazel", "dind", "host-go", "quick", "release":
 		*b = buildStrategy(value)
 		return nil
 	}
-	return fmt.Errorf("Bad build strategy: %v (use: bazel, quick, release)", value)
+	return fmt.Errorf("bad build strategy: %v (use: bazel, dind, host-go, quick, release)", value)
 }
 
 func (b *buildStrategy) Type() string {
@@ -67,6 +69,8 @@ func (b *buildStrategy) Build() error {
 	switch *b {
 	case "bazel":
 		target = "bazel-release"
+	case "dind":
+		return dind.NewBuilder(util.K8s("kubernetes"), util.K8s("test-infra", "dind"), control).Build()
 	// you really should use "bazel" or "quick" in most cases, but in CI
 	// we are mimicking these in our job container without an extra level
 	// of sandboxing in some cases
@@ -83,7 +87,7 @@ func (b *buildStrategy) Build() error {
 	// TODO(fejta): FIX ME
 	// The build-release script needs stdin to ask the user whether
 	// it's OK to download the docker image.
-	return finishRunning(exec.Command("make", "-C", k8s("kubernetes"), target))
+	return control.FinishRunning(exec.Command("make", "-C", util.K8s("kubernetes"), target))
 }
 
 type buildFederationStrategy struct {
@@ -117,33 +121,5 @@ func (b *buildFederationStrategy) Build() error {
 		return fmt.Errorf("unknown federation build strategy: %v", b)
 	}
 
-	return finishRunning(exec.Command("make", "-C", k8s("federation"), target))
-}
-
-func (b *buildIngressGCEStrategy) Build() error {
-	// Currently, this is the only strategy.
-	target := "push-e2e"
-
-	// Make sure we are in the ingress-gce repo before getting the image tag.
-	err := os.Chdir(k8s("ingress-gce"))
-	if err != nil {
-		return fmt.Errorf("error during ingress-gce build: %v", err)
-	}
-	// Get image tag (git command is how ingress-gce Makefile generates the tag).
-	c := exec.Command("git", "describe", "--tags", "--always", "--dirty")
-	o, err := c.Output()
-	if err != nil {
-		return fmt.Errorf("error during ingress-gce build: %v", err)
-	}
-	// Make sure that kube-up uses the correct glbc image by exporting as
-	// environment variable
-	e := fmt.Sprintf("gcr.io/e2e-ingress-gce/ingress-gce-e2e-glbc-amd64:%s", o)
-	os.Setenv("GCE_GLBC_IMAGE", e)
-	// Ensure we are back in /go/src/k8s.io so that k8s binaries are acquired properly.
-	err = os.Chdir(k8s())
-	if err != nil {
-		return fmt.Errorf("error during ingress-gce build: %v", err)
-	}
-
-	return finishRunning(exec.Command("make", "-C", k8s("ingress-gce"), target))
+	return control.FinishRunning(exec.Command("make", "-C", util.K8s("federation"), target))
 }

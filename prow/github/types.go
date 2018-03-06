@@ -298,6 +298,8 @@ type IssueEvent struct {
 	Action IssueEventAction `json:"action"`
 	Issue  Issue            `json:"issue"`
 	Repo   Repo             `json:"repository"`
+	// Label is specified for IssueActionLabeled and IssueActionUnlabeled events.
+	Label Label `json:"label"`
 
 	// GUID is included in the header of the request received by Github.
 	GUID string
@@ -344,6 +346,7 @@ type Issue struct {
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Milestone Milestone `json:"milestone"`
 
 	// This will be non-nil if it is a pull request.
 	PullRequest *struct{} `json:"pull_request,omitempty"`
@@ -582,4 +585,10 @@ type GenericCommentEvent struct {
 	IssueState   string
 	IssueBody    string
 	IssueHTMLURL string
+}
+
+// Milestone is a milestone defined on a github repository
+type Milestone struct {
+	Title  string `json:"title"`
+	Number int    `json:"number"`
 }

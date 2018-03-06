@@ -32,6 +32,7 @@ import (
 
 	"github.com/ghodss/yaml"
 	"github.com/sirupsen/logrus"
+	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
@@ -42,7 +43,12 @@ const (
 	requestTimeout   = time.Minute
 
 	EmptySelector = ""
+
+	DefaultClusterAlias = "default"
 )
+
+// newClient is used to allow mocking out the behavior of 'NewClient' while testing.
+var newClient func(c *Cluster, namespace string) (*Client, error) = NewClient
 
 type Logger interface {
 	Debugf(s string, v ...interface{})
@@ -61,13 +67,15 @@ type Client struct {
 	fake      bool
 
 	hiddenReposProvider func() []string
+	hiddenOnly          bool
 }
 
 // SetHiddenRepoProvider takes a continuation that fetches a list of orgs and repos for
 // which PJs should not be returned.
 // NOTE: This function is not thread safe and should be called before the client is in use.
-func (c *Client) SetHiddenReposProvider(p func() []string) {
+func (c *Client) SetHiddenReposProvider(p func() []string, hiddenOnly bool) {
 	c.hiddenReposProvider = p
+	c.hiddenOnly = hiddenOnly
 }
 
 // Namespace returns a copy of the client pointing at the specified namespace.
@@ -274,6 +282,8 @@ func NewClientInCluster(namespace string) (*Client, error) {
 
 // Cluster represents the information necessary to talk to a Kubernetes
 // master endpoint.
+// NOTE: if your cluster runs on GKE you can use the following command to get these credentials:
+// gcloud --project <gcp_project> container clusters describe --zone <zone> <cluster_name>
 type Cluster struct {
 	// The IP address of the cluster's master endpoint.
 	Endpoint string `yaml:"endpoint"`
@@ -299,6 +309,43 @@ func NewClientFromFile(clusterPath, namespace string) (*Client, error) {
 		return nil, err
 	}
 	return NewClient(&c, namespace)
+}
+
+// ClientMapFromFile reads the file at clustersPath and attempts to load a map of cluster aliases
+// to authenticated clients to the respective clusters.
+// The file at clustersPath is expected to be a yaml map from strings to Cluster structs OR it may
+// simply be a single Cluster struct which will be assigned the alias $DefaultClusterAlias.
+// If the file is an alias map, it must include the alias $DefaultClusterAlias.
+func ClientMapFromFile(clustersPath, namespace string) (map[string]*Client, error) {
+	data, err := ioutil.ReadFile(clustersPath)
+	if err != nil {
+		return nil, err
+	}
+	var raw map[string]Cluster
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		// If we failed to unmarshal the multicluster format try the single Cluster format.
+		var singleConfig Cluster
+		if err := yaml.Unmarshal(data, &singleConfig); err != nil {
+			return nil, err
+		}
+		raw = map[string]Cluster{DefaultClusterAlias: singleConfig}
+	}
+	foundDefault := false
+	result := map[string]*Client{}
+	for alias, config := range raw {
+		client, err := newClient(&config, namespace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load config for build cluster alias %q in file %q: %v", alias, clustersPath, err)
+		}
+		result[alias] = client
+		if alias == DefaultClusterAlias {
+			foundDefault = true
+		}
+	}
+	if !foundDefault {
+		return nil, fmt.Errorf("failed to find the required %q alias in build cluster config %q", DefaultClusterAlias, clustersPath)
+	}
+	return result, nil
 }
 
 // NewClient returns an authenticated Client using the keys in the Cluster.
@@ -386,8 +433,12 @@ func (c *Client) getHiddenRepos() sets.String {
 	return sets.NewString(c.hiddenReposProvider()...)
 }
 
-func shouldHide(pj *ProwJob, hiddenRepos sets.String) bool {
-	return hiddenRepos.HasAny(fmt.Sprintf("%s/%s", pj.Spec.Refs.Org, pj.Spec.Refs.Repo), pj.Spec.Refs.Org)
+func shouldHide(pj *ProwJob, hiddenRepos sets.String, showHiddenOnly bool) bool {
+	shouldHide := hiddenRepos.HasAny(fmt.Sprintf("%s/%s", pj.Spec.Refs.Org, pj.Spec.Refs.Repo), pj.Spec.Refs.Org)
+	if showHiddenOnly {
+		return !shouldHide
+	}
+	return shouldHide
 }
 
 func (c *Client) GetProwJob(name string) (ProwJob, error) {
@@ -396,7 +447,7 @@ func (c *Client) GetProwJob(name string) (ProwJob, error) {
 	err := c.request(&request{
 		path: fmt.Sprintf("/apis/prow.k8s.io/v1/namespaces/%s/prowjobs/%s", c.namespace, name),
 	}, &pj)
-	if err == nil && shouldHide(&pj, c.getHiddenRepos()) {
+	if err == nil && shouldHide(&pj, c.getHiddenRepos(), c.hiddenOnly) {
 		pj = ProwJob{}
 		// Revealing the existence of this prow job is ok because the the pj name cannot be used to
 		// retrieve the pj itself. Furthermore, a timing attack could differentiate true 404s from
@@ -420,7 +471,7 @@ func (c *Client) ListProwJobs(selector string) ([]ProwJob, error) {
 		hidden := c.getHiddenRepos()
 		var pjs []ProwJob
 		for _, pj := range jl.Items {
-			if !shouldHide(&pj, hidden) {
+			if !shouldHide(&pj, hidden, c.hiddenOnly) {
 				pjs = append(pjs, pj)
 			}
 		}
@@ -448,7 +499,7 @@ func (c *Client) ReplaceProwJob(name string, job ProwJob) (ProwJob, error) {
 	return retJob, err
 }
 
-func (c *Client) CreatePod(p Pod) (Pod, error) {
+func (c *Client) CreatePod(p v1.Pod) (Pod, error) {
 	c.log("CreatePod", p)
 	var retPod Pod
 	err := c.request(&request{

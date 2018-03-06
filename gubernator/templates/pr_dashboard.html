@@ -2,6 +2,7 @@
 {% block title %}PR Dashboard{% endblock %}
 % block head
 <link rel="stylesheet" href="{{'octicons/octicons.css'|static}}" />
+<script src="{{'pr.js'|static}}"></script>
 {{ super() }}
 % endblock
 % block header
@@ -15,6 +16,19 @@ View
  | <input id="userBox" pattern='[-\w]+' name="user" type="textbox" placeholder="username" value="{{user or ''}}"}>
 <button>Switch User</button>
 </form>
+
+% if milestones
+<div id="milestone-nav">
+Filter Milestone: {% if milestone %}<a href="?">Any</a>{% else %}<b>Any</b>{% endif %}
+% for ms in milestones
+	% if ms == milestone
+		<b>{{ms}}</b>
+	% else
+		<a href="?milestone={{ms}}">{{ms}}</a>
+	% endif
+% endfor
+</div>
+% endif
 
 % for title, pred, search in cats
 	% set sub_prs = prs | select(pred)
@@ -36,7 +50,7 @@ View
 	% if sub_prs
 	<table class="pr pr-dash">
 	<thead>
-		<tr><th>Repo<th>Number<th>Author<th>Status<th>Updated<th>Assignees<th>Size<th>Title<th></th></tr>
+		<tr><th>Repo<th>Number<th>Author<th>Status<th>&#9660; Updated<th>Assignees<th>Size<th>Title</tr>
 	</thead>
 		% for pr in sub_prs
 			% set pl = pr.payload

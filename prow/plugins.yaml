@@ -7,28 +7,60 @@ triggers:
   - kubernetes
   - kubernetes-incubator
   - kubernetes-security
+  - kubernetes-sigs
+  - kubernetes-sig-testing
   - google/cadvisor
-  - google/kubeflow
   - tensorflow/k8s
+  - tensorflow/minigo
   - GoogleCloudPlatform/k8s-multicluster-ingress
+  - GoogleCloudPlatform/k8s-tpu-operator
   trusted_org: kubernetes
   join_org_url: "https://git.k8s.io/community/community-membership.md#member"
+- repos:
+  - containerd/cri-containerd
+  trusted_org: containerd
+  join_org_url: "https://github.com/containerd/containerd/blob/master/MAINTAINERS"
+- repos:
+  - kubeflow
+  trusted_org: kubeflow
+  join_org_url: https://github.com/kubeflow/kubeflow/blob/master/CONTRIBUTING.md
+- repos:
+  - tensorflow/minigo
+  trusted_org: tensorflow
+  join_org_url: https://github.com/tensorflow/minigo/blob/master/CONTRIBUTING.md
+owners:
+  mdyamlrepos:
+  - kubernetes/website
 
 approve:
 - repos:
   - kubernetes/charts
   - kubernetes/cluster-registry
   - kubernetes/community
+  - kubernetes/contrib
+  - kubernetes/dashboard
   - kubernetes/features
+  - kubernetes/federation
+  - kubernetes/gengo
+  - kubernetes/heapster
+  - kubernetes/ingress-nginx
+  - kubernetes/kops
+  - kubernetes/kube-deploy
   - kubernetes/kubectl
+  - kubernetes/kubernetes
+  - kubernetes/kubernetes-template-project
+  - kubernetes/kube-state-metrics
+  - kubernetes/minikube
+  - kubernetes/repo-infra
   - kubernetes/sig-release
   - kubernetes/steering
   - kubernetes/test-infra
+  - GoogleCloudPlatform/k8s-tpu-operator
   implicit_self_approve: true
 - repos:
-  - kubernetes/kubernetes
+  - kubernetes-sigs
+  - kubernetes-sig-testing
   implicit_self_approve: true
-  issue_required: true
 
 blockades:
 - repos:
@@ -53,18 +85,31 @@ blockades:
   - ^docs/yaml/kubectl/kubectl_.*\.yaml$
   explanation: "Files under `docs/yaml` must be in the `kubectl` directory and match pattern `kubectl_*.yaml`."
 - repos:
+  - kubernetes/kubernetes
+  blockregexps:
+  - ^examples/
+  explanation: "examples/ has moved to https://github.com/kubernetes/examples/"
+- repos:
   - kubernetes/community
   blockregexps:
   - ^events/2016
   - ^events/elections/2017
   explanation: "These files are historical, and from events that have already occurred."
 
+cat:
+  key_path: /etc/cat-api/api-key
 heart:
   adorees:
   - k8s-merge-robot
 
 slack:
   mergewarnings:
+  - repos:
+    - kubernetes/community
+    channels:
+    - sig-contribex
+    whitelist:
+    - k8s-ci-robot
   - repos:
     - kubernetes/kubernetes
     channels:
@@ -74,6 +119,7 @@ slack:
     - wojtek-t # 1.7 patch release manager
     - jpbetz # 1.8 patch release manager
     - mbohlool # 1.9 patch release manager
+    - calebamiles # 1.10 branch manager
   - repos:
     - kubernetes/test-infra
     channels:
@@ -81,24 +127,40 @@ slack:
     whitelist:
     - k8s-ci-robot
 
-milestonestatus:
+milestone:
   # You can curl the following endpoint in order to determine the github ID of your team
   # responsible for maintaining the milestones:
   # curl -H "Authorization: token <token>" https://api.github.com/orgs/<org-name>/teams
   maintainers_id: 2460384
+  maintainers_team: kubernetes-milestone-maintainers
 
 config_updater:
-  config_file: prow/config.yaml
-  plugin_file: prow/plugins.yaml
+  maps:
+    label_sync/labels.yaml: label-config
+    prow/config.yaml: config
+    prow/plugins.yaml: plugins
 
 plugins:
   google/cadvisor:
   - trigger
 
-  google/kubeflow:  
-  - lgtm
-  - size
-  - trigger
+  kubeflow:
+    # Enable /approve and /assign commands.
+    - approve
+    - assign
+    - blunderbuss
+    - help
+    - hold
+    - label
+    - lgtm
+    # Lets PRs & issues be flagged as stale
+    - lifecycle
+    - size
+    # Allows cleaning up stale commit statuses
+    - skip
+    # Applies a label to PRs with wip in the title to block merge
+    - wip
+    - trigger
 
   kubernetes/charts:
   - approve
@@ -120,6 +182,9 @@ plugins:
   - approve
   - blunderbuss
 
+  kubernetes/dashboard:
+  - approve
+
   kubernetes/dns:
   - trigger
 
@@ -129,16 +194,29 @@ plugins:
   kubernetes/ingress-gce:
   - trigger
 
+  kubernetes/ingress-nginx:
+  - approve
+
   kubernetes/federation:
   - trigger
   - approve
 
+  kubernetes/gengo:
+  - approve
+
   kubernetes/heapster:
+  - approve
+  - blunderbuss
   - trigger
 
   kubernetes/kops:
   - trigger
   - approve
+
+  kubernetes/kube-deploy:
+  - approve
+  - blunderbuss
+  - trigger
 
   kubernetes/kubectl:
   - approve
@@ -146,12 +224,25 @@ plugins:
   kubernetes/kubernetes:
   - approve
   - blockade
+  - blunderbuss
   - docs-no-retest
+  - milestone
+  - milestonestatus
   - release-note
   - require-sig
   - trigger
 
   kubernetes/kubernetes-template-project:
+  - approve
+
+  kubernetes/kube-state-metrics:
+  - approve
+  - blunderbuss
+
+  kubernetes/minikube:
+  - approve
+
+  kubernetes/repo-infra:
   - approve
 
   kubernetes/sig-release:
@@ -165,9 +256,15 @@ plugins:
   - config-updater
   - approve
 
+  kubernetes/website:
+  - approve
+  - blunderbuss
+
   kubernetes:
   - assign
+  - cat
   - cla
+  - dog
   - golint
   - heart
   - help
@@ -175,7 +272,6 @@ plugins:
   - label
   - lgtm
   - lifecycle
-  - milestonestatus
   - shrug
   - sigmention
   - size
@@ -192,7 +288,52 @@ plugins:
   - lifecycle
   - size
 
-  kubernetes-incubator/cri-containerd:
+  kubernetes-sigs:
+  - assign
+  - blunderbuss
+  - cat
+  - cla
+  - dog
+  - heart
+  - help
+  - hold
+  - label
+  - lgtm
+  - lifecycle
+  - shrug
+  - size
+  - skip
+  - wip
+  - yuks
+
+  kubernetes-sig-testing:
+  - assign
+  - approve
+  - blunderbuss
+  - cat
+  - cla
+  - dog
+  - golint
+  - heart
+  - help
+  - hold
+  - label
+  - lgtm
+  - lifecycle
+  - shrug
+  - size
+  - skip
+  - trigger
+  - wip
+  - yuks
+
+  containerd/cri-containerd:
+  - assign
+  - cla
+  - label
+  - lgtm
+  - lifecycle
+  - size
   - trigger
 
   kubernetes-security/kubernetes:
@@ -200,6 +341,11 @@ plugins:
 
   tensorflow/k8s:
   - trigger
+
+  tensorflow/minigo:
+  - trigger
+  - lgtm
+  - size
 
   spxtr/envoy:
   - assign
@@ -209,3 +355,37 @@ plugins:
 
   GoogleCloudPlatform/k8s-multicluster-ingress:
   - trigger
+
+  GoogleCloudPlatform/k8s-tpu-operator:
+  - approve
+  - assign
+  - blunderbuss
+  - hold
+  - label
+  - lgtm
+  - lifecycle
+  - size
+  - trigger
+  - wip
+
+external_plugins:
+  kubernetes/community:
+  - name: needs-rebase
+    events:
+      - pull_request
+  kubernetes/contrib:
+  - name: needs-rebase
+    events:
+      - pull_request
+  kubernetes/kops:
+  - name: needs-rebase
+    events:
+      - pull_request
+  kubernetes/kubernetes:
+  - name: needs-rebase
+    events:
+      - pull_request
+  kubernetes/test-infra:
+  - name: needs-rebase
+    events:
+      - pull_request
