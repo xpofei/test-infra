@@ -17,7 +17,6 @@ limitations under the License.
 package lifecycle
 
 import (
-	"fmt"
 	"regexp"
 	"time"
 
@@ -79,13 +78,7 @@ type lifecycleClient interface {
 }
 
 func deprecate(gc commentClient, plugin, org, repo string, number int, e *github.GenericCommentEvent) error {
-	select {
-	case <-deprecatedTick:
-		// Only warn once per tick
-		return gc.CreateComment(org, repo, number, plugins.FormatResponseRaw(e.Body, e.HTMLURL, e.User.Login, fmt.Sprintf("The %s prow plugin is deprecated, please migrate to the lifecycle plugin before April 2018", plugin)))
-	default:
-		return nil
-	}
+	return nil
 }
 
 func lifecycleHandleGenericComment(pc plugins.PluginClient, e github.GenericCommentEvent) error {
