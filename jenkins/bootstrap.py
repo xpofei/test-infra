@@ -94,7 +94,7 @@ def terminate(end, proc, kill):
     return True
 
 
-def _call(end, cmd, stdin=None, check=True, output=None, log_failures=True):
+def _call(end, cmd, stdin=None, check=True, output=None, log_failures=True, env=None):  # pylint: disable=too-many-locals
     """Start a subprocess."""
     logging.info('Call:  %s', ' '.join(pipes.quote(c) for c in cmd))
     begin = time.time()
@@ -106,6 +106,7 @@ def _call(end, cmd, stdin=None, check=True, output=None, log_failures=True):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         preexec_fn=os.setsid,
+        env=env,
     )
     if stdin:
         proc.stdin.write(stdin)
@@ -168,8 +169,13 @@ def pull_ref(pull):
     refs = []
     checkouts = []
     for ref in pulls:
-        if ':' in ref:  # master:abcd or 1234:abcd
-            name, sha = ref.split(':')
+        change_ref = None
+        if ':' in ref:  # master:abcd or 1234:abcd or 1234:abcd:ref/for/pr
+            res = ref.split(':')
+            name = res[0]
+            sha = res[1]
+            if len(res) > 2:
+                change_ref = res[2]
         elif not refs:  # master
             name, sha = ref, 'FETCH_HEAD'
         else:
@@ -179,7 +185,9 @@ def pull_ref(pull):
         checkouts.append(sha)
         if not refs:  # First ref should be branch to merge into
             refs.append(name)
-        else:  # Subsequent refs should be PR numbers
+        elif change_ref: # explicit change refs
+            refs.append(change_ref)
+        else: # PR numbers
             num = int(name)
             refs.append('+refs/pull/%d/head:refs/pr/%d' % (num, num))
     return refs, checkouts
@@ -197,6 +205,10 @@ def repository(repo, ssh):
     """Return the url associated with the repo."""
     if repo.startswith('k8s.io/'):
         repo = 'github.com/kubernetes/%s' % (repo[len('k8s.io/'):])
+    elif repo.startswith('sigs.k8s.io/'):
+        repo = 'github.com/kubernetes-sigs/%s' % (repo[len('sigs.k8s.io/'):])
+    elif repo.startswith('istio.io/'):
+        repo = 'github.com/istio/%s' % (repo[len('istio.io/'):])
     if ssh:
         if ":" not in repo:
             parts = repo.split('/', 1)
@@ -214,6 +226,12 @@ def auth_google_gerrit(git, call):
     call([git, 'clone', 'https://gerrit.googlesource.com/gcompute-tools'])
     call(['./gcompute-tools/git-cookie-authdaemon'])
 
+def commit_date(git, commit, call):
+    try:
+        return call([git, 'show', '-s', '--format=format:%ct', commit], output=True)
+    except subprocess.CalledProcessError:
+        logging.warning('Failed to print commit date for %s', commit)
+        return None
 
 def checkout(call, repo, repo_path, branch, pull, ssh='', git_cache='', clean=False):
     """Fetch and checkout the repository at the specified branch/pull.
@@ -270,8 +288,18 @@ def checkout(call, repo, repo_path, branch, pull, ssh='', git_cache='', clean=Fa
             logging.warning('git fetch failed')
             random_sleep(attempt)
     call([git, 'checkout', '-B', 'test', checkouts[0]])
+
+    # Lie about the date in merge commits: use sequential seconds after the
+    # commit date of the tip of the parent branch we're checking into.
+    merge_date = int(commit_date(git, 'HEAD', call) or time.time())
+
+    git_merge_env = os.environ.copy()
     for ref, head in zip(refs, checkouts)[1:]:
-        call(['git', 'merge', '--no-ff', '-m', 'Merge %s' % ref, head])
+        merge_date += 1
+        git_merge_env[GIT_AUTHOR_DATE_ENV] = str(merge_date)
+        git_merge_env[GIT_COMMITTER_DATE_ENV] = str(merge_date)
+        call(['git', 'merge', '--no-ff', '-m', 'Merge %s' % ref, head],
+             env=git_merge_env)
 
 
 def repos_dict(repos):
@@ -283,7 +311,6 @@ def start(gsutil, paths, stamp, node_name, version, repos):
     """Construct and upload started.json."""
     data = {
         'timestamp': int(stamp),
-        'jenkins-node': node_name,
         'node': node_name,
     }
     if version:
@@ -328,11 +355,14 @@ class GSUtil(object):
             gen = ['-h', 'x-goog-if-generation-match:%s' % generation]
         else:
             gen = []
-        cmd = [
-            self.gsutil, '-q',
-            '-h', 'Content-Type:application/json'] + gen + [
-            'cp', '-', path]
-        self.call(cmd, stdin=json.dumps(jdict, indent=2))
+        with tempfile.NamedTemporaryFile(prefix='gsutil_') as fp:
+            fp.write(json.dumps(jdict, indent=2))
+            fp.flush()
+            cmd = [
+                self.gsutil, '-q',
+                '-h', 'Content-Type:application/json'] + gen + [
+                'cp', fp.name, path]
+            self.call(cmd)
 
     def copy_file(self, dest, orig):
         """Copy the file to the specified path using compressed encoding."""
@@ -346,8 +376,11 @@ class GSUtil(object):
             headers += ['-h', 'Cache-Control:private, max-age=0, no-transform']
         if additional_headers:
             headers += additional_headers
-        cmd = [self.gsutil, '-q'] + headers + ['cp', '-', path]
-        self.call(cmd, stdin=txt)
+        with tempfile.NamedTemporaryFile(prefix='gsutil_') as fp:
+            fp.write(txt)
+            fp.flush()
+            cmd = [self.gsutil, '-q'] + headers + ['cp', fp.name, path]
+            self.call(cmd)
 
     def cat(self, path, generation):
         """Return contents of path#generation"""
@@ -669,6 +702,9 @@ SERVICE_ACCOUNT_ENV = 'GOOGLE_APPLICATION_CREDENTIALS'
 WORKSPACE_ENV = 'WORKSPACE'
 GCS_ARTIFACTS_ENV = 'GCS_ARTIFACTS_DIR'
 IMAGE_NAME_ENV = 'IMAGE'
+GIT_AUTHOR_DATE_ENV = 'GIT_AUTHOR_DATE'
+GIT_COMMITTER_DATE_ENV = 'GIT_COMMITTER_DATE'
+SOURCE_DATE_EPOCH_ENV = 'SOURCE_DATE_EPOCH'
 
 
 def build_name(started):
@@ -736,7 +772,7 @@ def setup_logging(path):
     return build_log
 
 
-def setup_magic_environment(job):
+def setup_magic_environment(job, call):
     """Set magic environment variables scripts currently expect."""
     home = os.environ[HOME_ENV]
     # TODO(fejta): jenkins sets these values. Consider migrating to using
@@ -788,6 +824,13 @@ def setup_magic_environment(job):
     # risk that running a job on a workstation corrupts the user's config.
     os.environ[CLOUDSDK_ENV] = '%s/.config/gcloud' % cwd
 
+    # Try to set SOURCE_DATE_EPOCH based on the commit date of the tip of the
+    # tree.
+    # This improves cacheability of stamped binaries.
+    head_commit_date = commit_date('git', 'HEAD', call)
+    if head_commit_date:
+        os.environ[SOURCE_DATE_EPOCH_ENV] = head_commit_date.strip()
+
 
 def job_args(args):
     """Converts 'a ${FOO} $bar' into 'a wildly different string'."""
@@ -821,7 +864,7 @@ def gubernator_uri(paths):
 
 
 @contextlib.contextmanager
-def choose_ssh_key(ssh):
+def configure_ssh_key(ssh):
     """Creates a script for GIT_SSH that uses -i ssh if set."""
     if not ssh:  # Nothing to do
         yield
@@ -867,21 +910,20 @@ def setup_root(call, root, repos, ssh, git_cache, clean):
     # under the sun assumes $GOPATH/src/k8s.io/kubernetes so... :(
     # after this method is called we've already computed the upload paths
     # etc. so we can just swap it out for the desired path on disk
-    with choose_ssh_key(ssh):
-        for repo, (branch, pull) in repos.items():
-            os.chdir(root_dir)
-            # for k-s/k these are different, for the rest they are the same
-            # TODO(bentheelder,cjwagner,stevekuznetsov): in the integrated
-            # prow checkout support remapping checkouts and kill this monstrosity
-            repo_path = repo
-            if repo == "github.com/kubernetes-security/kubernetes":
-                repo_path = "k8s.io/kubernetes"
-            logging.info(
-                'Checkout: %s %s to %s',
-                os.path.join(root_dir, repo),
-                pull and pull or branch,
-                os.path.join(root_dir, repo_path))
-            checkout(call, repo, repo_path, branch, pull, ssh, git_cache, clean)
+    for repo, (branch, pull) in repos.items():
+        os.chdir(root_dir)
+        # for k-s/k these are different, for the rest they are the same
+        # TODO(bentheelder,cjwagner,stevekuznetsov): in the integrated
+        # prow checkout support remapping checkouts and kill this monstrosity
+        repo_path = repo
+        if repo == "github.com/kubernetes-security/kubernetes":
+            repo_path = "k8s.io/kubernetes"
+        logging.info(
+            'Checkout: %s %s to %s',
+            os.path.join(root_dir, repo),
+            pull and pull or branch,
+            os.path.join(root_dir, repo_path))
+        checkout(call, repo, repo_path, branch, pull, ssh, git_cache, clean)
     # switch out the main repo for the actual path on disk if we are k-s/k
     # from this point forward this is the path we want to use for everything
     if repos.main == "github.com/kubernetes-security/kubernetes":
@@ -919,7 +961,8 @@ def parse_repos(args):
         ret[repo] = (args.branch, args.pull)
         return ret
     for repo in repos:
-        mat = re.match(r'([^=]+)(=([^:,~^\s]+(:[0-9a-fA-F]+)?(,|$))+)?$', repo)
+        mat = re.match(
+            r'([^=]+)(=([^:,~^\s]+(:[0-9a-fA-F]+)?(:refs/changes/[0-9/]+)?(,|$))+)?$', repo)
         if not mat:
             raise ValueError('bad repo', repo, repos)
         this_repo = mat.group(1)
@@ -953,6 +996,8 @@ def bootstrap(args):
     call = lambda *a, **kw: _call(end, *a, **kw)
     gsutil = GSUtil(call)
 
+    if len(sys.argv) > 1:
+        logging.info('Args: %s', ' '.join(pipes.quote(a) for a in sys.argv[1:]))
     logging.info('Bootstrap %s...', job)
     logging.info('Builder: %s', node())
     if IMAGE_NAME_ENV in os.environ:
@@ -977,24 +1022,25 @@ def bootstrap(args):
     exc_type = None
 
     try:
-        setup_root(call, args.root, repos, args.ssh, args.git_cache, args.clean)
-        logging.info('Configure environment...')
-        if repos:
-            version = find_version(call)
-        else:
-            version = ''
-        setup_magic_environment(job)
-        setup_credentials(call, args.service_account, upload)
-        logging.info('Start %s at %s...', build, version)
-        if upload:
-            start(gsutil, paths, started, node(), version, repos)
-        success = False
-        try:
-            call(job_script(job, args.scenario, args.extra_job_args))
-            logging.info('PASS: %s', job)
-            success = True
-        except subprocess.CalledProcessError:
-            logging.error('FAIL: %s', job)
+        with configure_ssh_key(args.ssh):
+            setup_root(call, args.root, repos, args.ssh, args.git_cache, args.clean)
+            logging.info('Configure environment...')
+            if repos:
+                version = find_version(call)
+            else:
+                version = ''
+            setup_magic_environment(job, call)
+            setup_credentials(call, args.service_account, upload)
+            logging.info('Start %s at %s...', build, version)
+            if upload:
+                start(gsutil, paths, started, node(), version, repos)
+            success = False
+            try:
+                call(job_script(job, args.scenario, args.extra_job_args))
+                logging.info('PASS: %s', job)
+                success = True
+            except subprocess.CalledProcessError:
+                logging.error('FAIL: %s', job)
     except Exception:  # pylint: disable=broad-except
         exc_type, exc_value, exc_traceback = sys.exc_info()
         logging.exception('unexpected error')

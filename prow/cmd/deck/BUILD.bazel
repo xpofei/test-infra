@@ -17,7 +17,14 @@ container_image(
     # Add files under into the root directory.
     directory = "/",
     # Everything under static/
-    files = glob(["static/**/*"]),
+    files = glob(
+        ["static/**/*"],
+        exclude = [
+            "static/tide.js",
+            "static/data.js",
+            "static/plugin-help.js",
+        ],
+    ),
 )
 
 go_image(
@@ -46,6 +53,7 @@ go_test(
         "//prow/pluginhelp:go_default_library",
         "//prow/tide:go_default_library",
         "//vendor/github.com/ghodss/yaml:go_default_library",
+        "//vendor/github.com/sirupsen/logrus:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/api/equality:go_default_library",
     ],
 )
@@ -66,8 +74,8 @@ go_library(
         "//prow/logrusutil:go_default_library",
         "//prow/pjutil:go_default_library",
         "//prow/pluginhelp:go_default_library",
+        "//prow/prstatus:go_default_library",
         "//prow/tide:go_default_library",
-        "//prow/userdashboard:go_default_library",
         "//vendor/github.com/NYTimes/gziphandler:go_default_library",
         "//vendor/github.com/ghodss/yaml:go_default_library",
         "//vendor/github.com/gorilla/sessions:go_default_library",

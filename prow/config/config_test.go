@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -38,12 +39,16 @@ import (
 // config.json is the worst but contains useful information :-(
 type configJSON map[string]map[string]interface{}
 
+var configPath = flag.String("config", "../config.yaml", "Path to prow job config")
+var configJsonPath = flag.String("config-json", "../../jobs/config.json", "Path to prow job config")
+
 func (c configJSON) ScenarioForJob(jobName string) string {
 	if scenario, ok := c[jobName]["scenario"]; ok {
 		return scenario.(string)
 	}
 	return ""
 }
+
 func readConfigJSON(path string) (config configJSON, err error) {
 	raw, err := ioutil.ReadFile(path)
 	if err != nil {
@@ -62,23 +67,30 @@ var c *Config
 var cj configJSON
 
 func TestMain(m *testing.M) {
-	conf, err := Load("../config.yaml")
+	if *configPath == "" {
+		fmt.Println("--config must set")
+		os.Exit(1)
+	}
+
+	conf, err := Load(*configPath)
 	if err != nil {
 		fmt.Printf("Could not load config: %v", err)
 		os.Exit(1)
 	}
 	c = conf
 
-	cj, err = readConfigJSON("../../jobs/config.json")
-	if err != nil {
-		fmt.Printf("Could not load jobs config: %v", err)
-		os.Exit(1)
+	if *configJsonPath != "" {
+		cj, err = readConfigJSON(*configJsonPath)
+		if err != nil {
+			fmt.Printf("Could not load jobs config: %v", err)
+			os.Exit(1)
+		}
 	}
 
 	os.Exit(m.Run())
 }
 
-func volumesAndMountsMatch(mounts []v1.VolumeMount, volumes []v1.Volume) bool {
+func missingVolumesForContainer(mounts []v1.VolumeMount, volumes []v1.Volume) sets.String {
 	mountNames := sets.NewString()
 	volumeNames := sets.NewString()
 	for _, m := range mounts {
@@ -87,34 +99,66 @@ func volumesAndMountsMatch(mounts []v1.VolumeMount, volumes []v1.Volume) bool {
 	for _, v := range volumes {
 		volumeNames.Insert(v.Name)
 	}
-	return volumeNames.Equal(mountNames)
+	return mountNames.Difference(volumeNames)
 }
 
-func specHasMatchingVolumesAndMounts(spec *v1.PodSpec) bool {
+func missingVolumesForSpec(spec *v1.PodSpec) map[string]sets.String {
+	malformed := map[string]sets.String{}
+	for _, container := range spec.InitContainers {
+		malformed[container.Name] = missingVolumesForContainer(container.VolumeMounts, spec.Volumes)
+	}
 	for _, container := range spec.Containers {
-		if !volumesAndMountsMatch(container.VolumeMounts, spec.Volumes) {
-			return false
+		malformed[container.Name] = missingVolumesForContainer(container.VolumeMounts, spec.Volumes)
+	}
+	return malformed
+}
+
+func missingMountsForSpec(spec *v1.PodSpec) sets.String {
+	mountNames := sets.NewString()
+	volumeNames := sets.NewString()
+	for _, container := range spec.Containers {
+		for _, m := range container.VolumeMounts {
+			mountNames.Insert(m.Name)
 		}
 	}
-	return true
+	for _, container := range spec.InitContainers {
+		for _, m := range container.VolumeMounts {
+			mountNames.Insert(m.Name)
+		}
+	}
+	for _, v := range spec.Volumes {
+		volumeNames.Insert(v.Name)
+	}
+	return volumeNames.Difference(mountNames)
 }
 
 // verify that all volume mounts reference volumes that exist
 func TestMountsHaveVolumes(t *testing.T) {
 	for _, job := range c.AllPresubmits(nil) {
-		if job.Spec != nil && !specHasMatchingVolumesAndMounts(job.Spec) {
-			t.Errorf("volumes and mounts do not match for: %v", job.Name)
+		if job.Spec != nil {
+			validateVolumesAndMounts(job.Name, job.Spec, t)
 		}
 	}
 	for _, job := range c.AllPostsubmits(nil) {
-		if job.Spec != nil && !specHasMatchingVolumesAndMounts(job.Spec) {
-			t.Errorf("volumes and mounts do not match for: %v", job.Name)
+		if job.Spec != nil {
+			validateVolumesAndMounts(job.Name, job.Spec, t)
 		}
 	}
 	for _, job := range c.AllPeriodics() {
-		if job.Spec != nil && !specHasMatchingVolumesAndMounts(job.Spec) {
-			t.Errorf("volumes and mounts do not match for: %v", job.Name)
+		if job.Spec != nil {
+			validateVolumesAndMounts(job.Name, job.Spec, t)
 		}
+	}
+}
+
+func validateVolumesAndMounts(name string, spec *v1.PodSpec, t *testing.T) {
+	for container, missingVolumes := range missingVolumesForSpec(spec) {
+		if len(missingVolumes) > 0 {
+			t.Errorf("job %s in container %s has mounts that are missing volumes: %v", name, container, missingVolumes.List())
+		}
+	}
+	if missingMounts := missingMountsForSpec(spec); len(missingMounts) > 0 {
+		t.Errorf("job %s has volumes that are not mounted: %v", name, missingMounts.List())
 	}
 }
 
@@ -514,7 +558,6 @@ func checkBazelbuildSpec(t *testing.T, name string, spec *v1.PodSpec, periodic b
 			"--service-account",
 			"--upload",
 			"--job",
-			"--clean",
 		} {
 			if _, ok := found[f]; !ok {
 				t.Errorf("%s: missing %s flag", name, f)
@@ -685,8 +728,6 @@ func TestURLTemplate(t *testing.T) {
 		{
 			name:    "k8s periodic",
 			jobType: kube.PeriodicJob,
-			org:     "kubernetes",
-			repo:    "kubernetes",
 			job:     "k8s-peri-1",
 			build:   "1",
 			expect:  "https://k8s-gubernator.appspot.com/build/kubernetes-jenkins/logs/k8s-peri-1/1/",
@@ -694,8 +735,6 @@ func TestURLTemplate(t *testing.T) {
 		{
 			name:    "empty periodic",
 			jobType: kube.PeriodicJob,
-			org:     "",
-			repo:    "",
 			job:     "nan-peri-1",
 			build:   "1",
 			expect:  "https://k8s-gubernator.appspot.com/build/kubernetes-jenkins/logs/nan-peri-1/1/",
@@ -717,15 +756,17 @@ func TestURLTemplate(t *testing.T) {
 			Spec: kube.ProwJobSpec{
 				Type: tc.jobType,
 				Job:  tc.job,
-				Refs: kube.Refs{
-					Pulls: []kube.Pull{{}},
-					Org:   tc.org,
-					Repo:  tc.repo,
-				},
 			},
 			Status: kube.ProwJobStatus{
 				BuildID: tc.build,
 			},
+		}
+		if tc.jobType != kube.PeriodicJob {
+			pj.Spec.Refs = &kube.Refs{
+				Pulls: []kube.Pull{{}},
+				Org:   tc.org,
+				Repo:  tc.repo,
+			}
 		}
 
 		var b bytes.Buffer
@@ -775,7 +816,7 @@ func TestReportTemplate(t *testing.T) {
 		var b bytes.Buffer
 		if err := c.Plank.ReportTemplate.Execute(&b, &kube.ProwJob{
 			Spec: kube.ProwJobSpec{
-				Refs: kube.Refs{
+				Refs: &kube.Refs{
 					Org:  tc.org,
 					Repo: tc.repo,
 					Pulls: []kube.Pull{
@@ -796,60 +837,6 @@ func TestReportTemplate(t *testing.T) {
 	}
 }
 
-func TestPullKubernetesCross(t *testing.T) {
-	crossBuildJob := "pull-kubernetes-cross"
-	tests := []struct {
-		changedFile string
-		expected    bool
-	}{
-		{
-			changedFile: "pkg/kubelet/cadvisor/cadvisor_unsupported.go",
-			expected:    true,
-		},
-		{
-			changedFile: "pkg/kubelet/cadvisor/util.go",
-			expected:    false,
-		},
-		{
-			changedFile: "Makefile",
-			expected:    true,
-		},
-		{
-			changedFile: "hack/lib/etcd.sh",
-			expected:    true,
-		},
-		{
-			changedFile: "build/debs/kubelet.service",
-			expected:    true,
-		},
-		{
-			changedFile: "federation/README.md",
-			expected:    false,
-		},
-	}
-	kkPresumits := c.Presubmits["kubernetes/kubernetes"]
-	var cross *Presubmit
-	for i := range kkPresumits {
-		ps := kkPresumits[i]
-		if ps.Name == crossBuildJob {
-			cross = &ps
-			break
-		}
-	}
-	if cross == nil {
-		t.Fatalf("expected %q in the presubmit section of the prow config", crossBuildJob)
-	}
-
-	for i, test := range tests {
-		t.Logf("test run #%d", i)
-		got := cross.RunsAgainstChanges([]string{test.changedFile})
-		if got != test.expected {
-			t.Errorf("expected changes (%s) to run cross job: %t, got: %t",
-				test.changedFile, test.expected, got)
-		}
-	}
-}
-
 // checkLatestUsesImagePullPolicy returns an error if an image is a `latest-.*` tag,
 // but doesn't have imagePullPolicy: Always
 func checkLatestUsesImagePullPolicy(spec *v1.PodSpec) error {
@@ -857,7 +844,7 @@ func checkLatestUsesImagePullPolicy(spec *v1.PodSpec) error {
 		if strings.Contains(container.Image, ":latest-") {
 			// If the job doesn't specify imagePullPolicy: Always,
 			// we aren't guaranteed to check for the latest version of the image.
-			if container.ImagePullPolicy == "" || container.ImagePullPolicy != "Always" {
+			if container.ImagePullPolicy != "Always" {
 				return errors.New("job uses latest- tag, but does not specify imagePullPolicy: Always")
 			}
 		}
@@ -909,11 +896,12 @@ func TestLatestUsesImagePullPolicy(t *testing.T) {
 func checkKubekinsPresets(jobName string, spec *v1.PodSpec, labels, validLabels map[string]string) error {
 	service := true
 	ssh := true
+
 	for _, container := range spec.Containers {
 		if strings.Contains(container.Image, "kubekins-e2e") || strings.Contains(container.Image, "bootstrap") {
 			service = false
 			for key, val := range labels {
-				if (key == "preset-gke-alpha-service" || key == "preset-service-account") && val == "true" {
+				if (key == "preset-gke-alpha-service" || key == "preset-service-account" || key == "preset-istio-service") && val == "true" {
 					service = true
 				}
 			}

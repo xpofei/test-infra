@@ -45,6 +45,7 @@ const (
 
 var (
 	gkeAdditionalZones             = flag.String("gke-additional-zones", "", "(gke only) List of additional Google Compute Engine zones to use. Clusters are created symmetrically across zones by default, see --gke-shape for details.")
+	gkeNodeLocations               = flag.String("gke-node-locations", "", "(gke only) List of Google Compute Engine zones to use.")
 	gkeEnvironment                 = flag.String("gke-environment", "", "(gke only) Container API endpoint to use, one of 'test', 'staging', 'prod', or a custom https:// URL")
 	gkeShape                       = flag.String("gke-shape", `{"default":{"Nodes":3,"MachineType":"n1-standard-2"}}`, `(gke only) A JSON description of node pools to create. The node pool 'default' is required and used for initial cluster creation. All node pools are symmetric across zones, so the cluster total node count is {total nodes in --gke-shape} * {1 + (length of --gke-additional-zones)}. Example: '{"default":{"Nodes":999,"MachineType:":"n1-standard-1"},"heapster":{"Nodes":1, "MachineType":"n1-standard-8"}}`)
 	gkeCreateArgs                  = flag.String("gke-create-args", "", "(gke only) (deprecated, use a modified --gke-create-command') Additional arguments passed directly to 'gcloud container clusters create'")
@@ -74,12 +75,15 @@ type gkeDeployer struct {
 	region                      string
 	location                    string
 	additionalZones             string
+	nodeLocations               string
 	cluster                     string
 	shape                       map[string]gkeNodePool
 	network                     string
 	subnetwork                  string
 	subnetworkRegion            string
 	image                       string
+	imageFamily                 string
+	imageProject                string
 	commandGroup                []string
 	createCommand               []string
 	singleZoneNodeInstanceGroup bool
@@ -98,7 +102,7 @@ type ig struct {
 
 var _ deployer = &gkeDeployer{}
 
-func newGKE(provider, project, zone, region, network, image, cluster string, testArgs *string, upgradeArgs *string) (*gkeDeployer, error) {
+func newGKE(provider, project, zone, region, network, image, imageFamily, imageProject, cluster string, testArgs *string, upgradeArgs *string) (*gkeDeployer, error) {
 	if provider != "gke" {
 		return nil, fmt.Errorf("--provider must be 'gke' for GKE deployment, found %q", provider)
 	}
@@ -135,9 +139,17 @@ func newGKE(provider, project, zone, region, network, image, cluster string, tes
 	if image == "" {
 		return nil, fmt.Errorf("--gcp-node-image must be set for GKE deployment")
 	}
+	if strings.ToUpper(image) == "CUSTOM" {
+		if imageFamily == "" || imageProject == "" {
+			return nil, fmt.Errorf("--image-family and --image-project must be set for GKE deployment if --gcp-node-image=CUSTOM")
+		}
+	}
+	g.imageFamily = imageFamily
+	g.imageProject = imageProject
 	g.image = image
 
 	g.additionalZones = *gkeAdditionalZones
+	g.nodeLocations = *gkeNodeLocations
 
 	err := json.Unmarshal([]byte(*gkeShape), &g.shape)
 	if err != nil {
@@ -247,7 +259,7 @@ func newGKE(provider, project, zone, region, network, image, cluster string, tes
 				if strings.HasPrefix(val, "gke-latest-") {
 					releasePrefix = strings.TrimPrefix(val, "gke-latest-")
 				}
-				if val, err = getLatestGKEVersion(project, zone, releasePrefix); err != nil {
+				if val, err = getLatestGKEVersion(project, zone, region, releasePrefix); err != nil {
 					return nil, fmt.Errorf("fail to get latest gke version : %v", err)
 				}
 			}
@@ -269,7 +281,7 @@ func (g *gkeDeployer) Up() error {
 		// Assume error implies non-existent.
 		if err := control.FinishRunning(exec.Command("gcloud", "compute", "networks", "create", g.network,
 			"--project="+g.project,
-			"--mode=auto")); err != nil {
+			"--subnet-mode=auto")); err != nil {
 			return err
 		}
 	}
@@ -297,6 +309,10 @@ func (g *gkeDeployer) Up() error {
 		"--num-nodes="+strconv.Itoa(def.Nodes),
 		"--network="+g.network,
 	)
+	if strings.ToUpper(g.image) == "CUSTOM" {
+		args = append(args, "--image-family="+g.imageFamily)
+		args = append(args, "--image-project="+g.imageProject)
+	}
 	if g.subnetwork != "" {
 		args = append(args, "--subnetwork="+g.subnetwork)
 	}
@@ -306,6 +322,15 @@ func (g *gkeDeployer) Up() error {
 			return fmt.Errorf("error setting MULTIZONE env variable: %v", err)
 		}
 
+	}
+	if g.nodeLocations != "" {
+		args = append(args, "--node-locations="+g.nodeLocations)
+		numNodeLocations := strings.Split(g.nodeLocations, ",")
+		if len(numNodeLocations) > 1 {
+			if err := os.Setenv("MULTIZONE", "true"); err != nil {
+				return fmt.Errorf("error setting MULTIZONE env variable: %v", err)
+			}
+		}
 	}
 	// TODO(zmerlynn): The version should be plumbed through Extract
 	// or a separate flag rather than magic env variables.

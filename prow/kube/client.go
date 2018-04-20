@@ -416,7 +416,13 @@ func (c *Client) DeletePod(name string) error {
 }
 
 func (c *Client) CreateProwJob(j ProwJob) (ProwJob, error) {
-	c.log("CreateProwJob", j)
+	var representation string
+	if out, err := json.Marshal(j); err == nil {
+		representation = string(out[:])
+	} else {
+		representation = fmt.Sprintf("%v", j)
+	}
+	c.log("CreateProwJob", representation)
 	var retJob ProwJob
 	err := c.request(&request{
 		method:      http.MethodPost,
@@ -434,6 +440,11 @@ func (c *Client) getHiddenRepos() sets.String {
 }
 
 func shouldHide(pj *ProwJob, hiddenRepos sets.String, showHiddenOnly bool) bool {
+	if pj.Spec.Refs == nil {
+		// periodic jobs do not have refs and therefore cannot be
+		// hidden by the org/repo mechanism
+		return false
+	}
 	shouldHide := hiddenRepos.HasAny(fmt.Sprintf("%s/%s", pj.Spec.Refs.Org, pj.Spec.Refs.Repo), pj.Spec.Refs.Org)
 	if showHiddenOnly {
 		return !shouldHide
@@ -517,14 +528,6 @@ func (c *Client) GetLog(pod string) ([]byte, error) {
 	})
 }
 
-func (c *Client) GetLogStream(pod string, options map[string]string) (io.ReadCloser, error) {
-	c.log("GetLogStream", pod)
-	return c.requestRetryStream(&request{
-		path:  fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", c.namespace, pod),
-		query: options,
-	})
-}
-
 func (c *Client) CreateConfigMap(content ConfigMap) (ConfigMap, error) {
 	c.log("CreateConfigMap")
 	var retConfigMap ConfigMap
@@ -539,10 +542,14 @@ func (c *Client) CreateConfigMap(content ConfigMap) (ConfigMap, error) {
 
 func (c *Client) ReplaceConfigMap(name string, config ConfigMap) (ConfigMap, error) {
 	c.log("ReplaceConfigMap", name)
+	namespace := c.namespace
+	if config.Namespace != "" {
+		namespace = config.Namespace
+	}
 	var retConfigMap ConfigMap
 	err := c.request(&request{
 		method:      http.MethodPut,
-		path:        fmt.Sprintf("/api/v1/namespaces/%s/configmaps/%s", c.namespace, name),
+		path:        fmt.Sprintf("/api/v1/namespaces/%s/configmaps/%s", namespace, name),
 		requestBody: &config,
 	}, &retConfigMap)
 

@@ -30,7 +30,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/test-infra/prow/config"
 	"k8s.io/test-infra/prow/git"
 	"k8s.io/test-infra/prow/github"
@@ -165,6 +164,7 @@ func main() {
 	if err != nil {
 		logrus.WithError(err).Fatal("Error getting git client.")
 	}
+	defer gitClient.Clean()
 	// Get the bot's name in order to set credentials for the git client.
 	botName, err := githubClient.BotName()
 	if err != nil {
@@ -174,15 +174,9 @@ func main() {
 
 	pluginAgent := &plugins.PluginAgent{}
 
-	ownersDirBlacklistConf := configAgent.Config().OwnersDirBlacklist
-	ownersDirBlacklistDefault := sets.NewString(ownersDirBlacklistConf.Default...)
-	ownersDirBlacklistByRepo := make(map[string]sets.String)
-	for orgRepo, blacklist := range ownersDirBlacklistConf.Repos {
-		ownersDirBlacklistByRepo[orgRepo] = sets.NewString(blacklist...)
-	}
 	ownersClient := repoowners.NewClient(
-		gitClient, githubClient, pluginAgent.MDYAMLEnabled,
-		ownersDirBlacklistDefault, ownersDirBlacklistByRepo,
+		gitClient, githubClient,
+		configAgent, pluginAgent.MDYAMLEnabled,
 	)
 
 	pluginAgent.PluginClient = plugins.PluginClient{

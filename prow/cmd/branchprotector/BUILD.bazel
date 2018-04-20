@@ -10,7 +10,7 @@ k8s_object(
     name = "oneshot",
     cluster = "{STABLE_PROW_CLUSTER}",
     image_chroot = "{STABLE_DOCKER_REPO}",
-    images = prow_tags("branchprotector"),
+    images = {"gcr.io/k8s-testimages/branchprotector:latest": ":image"},
     kind = "Job",
     template = ":oneshot-job.yaml",
 )
@@ -45,6 +45,7 @@ go_test(
     deps = [
         "//prow/config:go_default_library",
         "//prow/github:go_default_library",
+        "//vendor/k8s.io/apimachinery/pkg/util/sets:go_default_library",
     ],
 )
 
@@ -65,5 +66,6 @@ filegroup(
 go_binary(
     name = "branchprotector",
     embed = [":go_default_library"],
+    pure = "on",
     visibility = ["//visibility:public"],
 )

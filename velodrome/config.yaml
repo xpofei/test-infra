@@ -167,6 +167,7 @@ projects:
       istio/istio: *transform-istio
       istio/pilot: *transform-istio
       istio/mixer: *transform-istio
+      istio/fortio: *transform-istio
       istio/proxy: *transform-istio
     nginx:
       public-ip: "130.211.224.127"
@@ -181,7 +182,7 @@ projects:
             metrics_path: /metrics
             static_configs:
               - targets:
-                  - http://104.197.146.56:9103
+                  - http://35.199.148.121:9103
   tensorflow:
     repositories:
       tensorflow/tensorflow:

@@ -26,10 +26,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"k8s.io/test-infra/prow/pod-utils/downwardapi"
+
 	"cloud.google.com/go/storage"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/api/option"
-	"k8s.io/test-infra/prow/pjutil"
 )
 
 type pathStrategyType string
@@ -123,7 +124,7 @@ func (o *Options) Run(extra map[string]UploadFunc) error {
 		builder = NewSingleDefaultRepoPathBuilder(o.DefaultOrg, o.DefaultRepo)
 	}
 
-	spec, err := pjutil.ResolveSpecFromEnv()
+	spec, err := downwardapi.ResolveSpecFromEnv()
 	if err != nil {
 		return fmt.Errorf("could not resolve job spec: %v", err)
 	}
@@ -145,8 +146,10 @@ func (o *Options) Run(extra map[string]UploadFunc) error {
 		uploadTargets[alias] = DataUpload(strings.NewReader(fullBasePath))
 	}
 
-	if latestBuild := LatestBuildForSpec(spec); latestBuild != "" {
-		uploadTargets[latestBuild] = DataUpload(strings.NewReader(spec.BuildId))
+	if latestBuilds := LatestBuildForSpec(spec, builder); len(latestBuilds) > 0 {
+		for _, latestBuild := range latestBuilds {
+			uploadTargets[latestBuild] = DataUpload(strings.NewReader(spec.BuildId))
+		}
 	}
 
 	for _, item := range o.Items {

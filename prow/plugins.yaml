@@ -8,16 +8,14 @@ triggers:
   - kubernetes-incubator
   - kubernetes-security
   - kubernetes-sigs
-  - kubernetes-sig-testing
   - google/cadvisor
   - tensorflow/k8s
   - tensorflow/minigo
   - GoogleCloudPlatform/k8s-multicluster-ingress
-  - GoogleCloudPlatform/k8s-tpu-operator
   trusted_org: kubernetes
   join_org_url: "https://git.k8s.io/community/community-membership.md#member"
 - repos:
-  - containerd/cri-containerd
+  - containerd/cri
   trusted_org: containerd
   join_org_url: "https://github.com/containerd/containerd/blob/master/MAINTAINERS"
 - repos:
@@ -36,9 +34,9 @@ approve:
 - repos:
   - kubernetes/charts
   - kubernetes/cluster-registry
-  - kubernetes/community
   - kubernetes/contrib
   - kubernetes/dashboard
+  - kubernetes/examples
   - kubernetes/features
   - kubernetes/federation
   - kubernetes/gengo
@@ -51,15 +49,16 @@ approve:
   - kubernetes/kubernetes-template-project
   - kubernetes/kube-state-metrics
   - kubernetes/minikube
+  - kubernetes/node-problem-detector
+  - kubernetes/perf-tests
   - kubernetes/repo-infra
   - kubernetes/sig-release
   - kubernetes/steering
   - kubernetes/test-infra
-  - GoogleCloudPlatform/k8s-tpu-operator
   implicit_self_approve: true
+  lgtm_acts_as_approve: true
 - repos:
   - kubernetes-sigs
-  - kubernetes-sig-testing
   implicit_self_approve: true
 
 blockades:
@@ -115,7 +114,9 @@ slack:
     channels:
     - kubernetes-dev
     whitelist:
-    - k8s-merge-robot
+    - k8s-ci-robot # future home of tide
+    - k8s-merge-robot # submit queue
+    - k8s-release-robot # anago
     - wojtek-t # 1.7 patch release manager
     - jpbetz # 1.8 patch release manager
     - mbohlool # 1.9 patch release manager
@@ -136,9 +137,12 @@ milestone:
 
 config_updater:
   maps:
-    label_sync/labels.yaml: label-config
-    prow/config.yaml: config
-    prow/plugins.yaml: plugins
+    label_sync/labels.yaml:
+      name: label-config
+    prow/config.yaml:
+      name: config
+    prow/plugins.yaml:
+      name: plugins
 
 plugins:
   google/cadvisor:
@@ -167,6 +171,26 @@ plugins:
   - blunderbuss
   - trigger
 
+  kubernetes/cloud-provider-aws:
+  - approve
+  - blunderbuss
+  - trigger
+
+  kubernetes/cloud-provider-azure:
+  - approve
+  - blunderbuss
+  - trigger
+
+  kubernetes/cloud-provider-gcp:
+  - approve
+  - blunderbuss
+  - trigger
+
+  kubernetes/cloud-provider-openstack:
+  - approve
+  - blunderbuss
+  - trigger
+
   kubernetes/cluster-registry:
   - approve
   - trigger
@@ -175,6 +199,7 @@ plugins:
   - approve
   - blunderbuss
   - blockade
+  - owners-label
   - require-sig
   - trigger
 
@@ -187,6 +212,10 @@ plugins:
 
   kubernetes/dns:
   - trigger
+
+  kubernetes/examples:
+  - trigger
+  - approve
 
   kubernetes/features:
   - approve
@@ -228,6 +257,7 @@ plugins:
   - docs-no-retest
   - milestone
   - milestonestatus
+  - owners-label
   - release-note
   - require-sig
   - trigger
@@ -241,6 +271,17 @@ plugins:
 
   kubernetes/minikube:
   - approve
+
+  kubernetes/node-problem-detector:
+  - approve
+  - blunderbuss
+
+  kubernetes/perf-tests:
+  - approve
+  - blunderbuss
+
+  kubernetes/release:
+  - trigger
 
   kubernetes/repo-infra:
   - approve
@@ -306,28 +347,19 @@ plugins:
   - wip
   - yuks
 
-  kubernetes-sig-testing:
-  - assign
+  kubernetes-sigs/testing_frameworks:
   - approve
-  - blunderbuss
-  - cat
-  - cla
-  - dog
-  - golint
-  - heart
-  - help
-  - hold
-  - label
-  - lgtm
-  - lifecycle
-  - shrug
-  - size
-  - skip
   - trigger
-  - wip
-  - yuks
 
-  containerd/cri-containerd:
+  kubernetes-sigs/poseidon:
+  - approve
+  - trigger
+
+  kubernetes-sigs/cluster-api:
+  - approve
+  - trigger
+  
+  containerd/cri:
   - assign
   - cla
   - label
@@ -355,18 +387,6 @@ plugins:
 
   GoogleCloudPlatform/k8s-multicluster-ingress:
   - trigger
-
-  GoogleCloudPlatform/k8s-tpu-operator:
-  - approve
-  - assign
-  - blunderbuss
-  - hold
-  - label
-  - lgtm
-  - lifecycle
-  - size
-  - trigger
-  - wip
 
 external_plugins:
   kubernetes/community:

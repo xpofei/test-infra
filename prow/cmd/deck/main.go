@@ -17,20 +17,17 @@ limitations under the License.
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path"
 	"regexp"
-	"strconv"
 	"time"
 
 	"github.com/NYTimes/gziphandler"
@@ -46,7 +43,7 @@ import (
 	"k8s.io/test-infra/prow/logrusutil"
 	"k8s.io/test-infra/prow/pjutil"
 	"k8s.io/test-infra/prow/pluginhelp"
-	"k8s.io/test-infra/prow/userdashboard"
+	"k8s.io/test-infra/prow/prstatus"
 )
 
 type options struct {
@@ -120,7 +117,7 @@ func main() {
 		mux.Handle("/", staticHandlerFromDir("./static"))
 	} else {
 		mux.Handle("/", staticHandlerFromDir("/static"))
-		prodOnlyMain(o, mux)
+		mux = prodOnlyMain(o, mux)
 	}
 
 	// setup done, actually start the server
@@ -128,7 +125,7 @@ func main() {
 }
 
 // prodOnlyMain contains logic only used when running deployed, not locally
-func prodOnlyMain(o options, mux *http.ServeMux) {
+func prodOnlyMain(o options, mux *http.ServeMux) *http.ServeMux {
 	// setup config agent, pod log clients etc.
 	configAgent := &config.Agent{}
 	if err := configAgent.Start(o.configPath); err != nil {
@@ -244,17 +241,17 @@ func prodOnlyMain(o options, mux *http.ServeMux) {
 			}
 		}
 
-		userDashboardAgent := userdashboard.NewDashboardAgent(
+		prStatusAgent := prstatus.NewDashboardAgent(
 			repos,
 			&githubOAuthConfig,
-			logrus.WithField("client", "user-dashboard"))
+			logrus.WithField("client", "pr-status"))
 
-		mux.Handle("/user-data.js", handleNotCached(
-			userDashboardAgent.HandleUserDashboard(userDashboardAgent)))
+		mux.Handle("/pr-data.js", handleNotCached(
+			prStatusAgent.HandlePrStatus(prStatusAgent)))
 		// Handles login request.
 		mux.Handle("/github-login", goa.HandleLogin(oauthClient))
 		// Handles redirect from Github OAuth server.
-		mux.Handle("/github-login/redirect", goa.HandleRedirect(oauthClient))
+		mux.Handle("/github-login/redirect", goa.HandleRedirect(oauthClient, githuboauth.NewGithubClientGetter()))
 	}
 
 	// optionally inject http->https redirect handler when behind loadbalancer
@@ -279,6 +276,7 @@ func prodOnlyMain(o options, mux *http.ServeMux) {
 		}(mux, o.redirectHTTPTo))
 		mux = redirectMux
 	}
+	return mux
 }
 
 func loadToken(file string) ([]byte, error) {
@@ -348,6 +346,11 @@ func handleProwJobs(ja *JobAgent) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setHeadersNoCaching(w)
 		jobs := ja.ProwJobs()
+		if v := r.URL.Query().Get("omit"); v == "pod_spec" {
+			for i := range jobs {
+				jobs[i].Spec.PodSpec = nil
+			}
+		}
 		jd, err := json.Marshal(struct {
 			Items []kube.ProwJob `json:"items"`
 		}{jobs})
@@ -444,41 +447,6 @@ func handlePluginHelp(ha *helpAgent) http.HandlerFunc {
 
 type logClient interface {
 	GetJobLog(job, id string) ([]byte, error)
-	// Add ability to stream logs with options enabled. This call is used to follow logs
-	// using kubernetes client API. All other options on the Kubernetes log api can
-	// also be enabled.
-	GetJobLogStream(job, id string, options map[string]string) (io.ReadCloser, error)
-}
-
-func httpChunking(log io.ReadCloser, w http.ResponseWriter) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		logrus.Warning("Error getting flusher.")
-	}
-	reader := bufio.NewReader(log)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			// TODO(rmmh): The log stops streaming after 30s.
-			// This seems to be an apiserver limitation-- investigate?
-			// logrus.WithError(err).Error("chunk failed to read!")
-			break
-		}
-		w.Write(line)
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-}
-
-func getOptions(values url.Values) map[string]string {
-	options := make(map[string]string)
-	for k, v := range values {
-		if k != "pod" && k != "job" && k != "id" {
-			options[k] = v[0]
-		}
-	}
-	return options
 }
 
 // TODO(spxtr): Cache, rate limit.
@@ -488,38 +456,18 @@ func handleLog(lc logClient) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		job := r.URL.Query().Get("job")
 		id := r.URL.Query().Get("id")
-		stream := r.URL.Query().Get("follow")
-		var logStreamRequested bool
-		if ok, _ := strconv.ParseBool(stream); ok {
-			// get http chunked responses to the client
-			w.Header().Set("Connection", "Keep-Alive")
-			w.Header().Set("Transfer-Encoding", "chunked")
-			logStreamRequested = true
-		}
 		if err := validateLogRequest(r); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if !logStreamRequested {
-			log, err := lc.GetJobLog(job, id)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("Log not found: %v", err), http.StatusNotFound)
-				logrus.WithError(err).Warning("Error returned.")
-				return
-			}
-			if _, err = w.Write(log); err != nil {
-				logrus.WithError(err).Warning("Error writing log.")
-			}
-		} else {
-			//run http chunking
-			options := getOptions(r.URL.Query())
-			log, err := lc.GetJobLogStream(job, id, options)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("Log stream caused: %v", err), http.StatusNotFound)
-				logrus.WithError(err).Warning("Error returned.")
-				return
-			}
-			httpChunking(log, w)
+		log, err := lc.GetJobLog(job, id)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Log not found: %v", err), http.StatusNotFound)
+			logrus.WithError(err).Warning("Error returned.")
+			return
+		}
+		if _, err = w.Write(log); err != nil {
+			logrus.WithError(err).Warning("Error writing log.")
 		}
 	}
 }

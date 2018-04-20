@@ -28,7 +28,8 @@ import (
 
 	"github.com/ghodss/yaml"
 	"github.com/sirupsen/logrus"
-	cron "gopkg.in/robfig/cron.v2"
+	"gopkg.in/robfig/cron.v2"
+	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
 	"k8s.io/test-infra/prow/kube"
@@ -50,9 +51,9 @@ type Config struct {
 	Sinker           Sinker           `json:"sinker,omitempty"`
 	Deck             Deck             `json:"deck,omitempty"`
 	BranchProtection BranchProtection `json:"branch-protection,omitempty"`
+	Gerrit           Gerrit           `json:"gerrit,omitempty"`
 
 	// TODO: Move this out of the main config.
-	JenkinsOperator  *JenkinsOperator  `json:"jenkins_operator,omitempty"`
 	JenkinsOperators []JenkinsOperator `json:"jenkins_operators,omitempty"`
 
 	// ProwJobNamespace is the namespace in the cluster that prow
@@ -145,6 +146,16 @@ type Plank struct {
 	// PodPendingTimeout is after how long the controller will perform a garbage
 	// collection on pending pods. Defaults to one day.
 	PodPendingTimeout time.Duration `json:"-"`
+}
+
+// Gerrit is config for the gerrit controller.
+type Gerrit struct {
+	// TickInterval is how often we do a sync with binded gerrit instance
+	TickIntervalString string        `json:"tick_interval,omitempty"`
+	TickInterval       time.Duration `json:"-"`
+	// RateLimit defines how many changes to query per gerrit API call
+	// default is 5
+	RateLimit int `json:"ratelimit,omitempty"`
 }
 
 // JenkinsOperator is config for the jenkins-operator controller.
@@ -255,84 +266,39 @@ func parseConfig(c *Config) error {
 
 	// Validate presubmits.
 	for _, v := range c.AllPresubmits(nil) {
-		name := v.Name
-		agent := v.Agent
-		// Ensure that k8s presubmits have a pod spec.
-		if agent == string(kube.KubernetesAgent) {
-			if v.Spec == nil {
-				return fmt.Errorf("job %s has no spec", name)
-			} else {
-				if len(v.Spec.Containers) > 1 {
-					return fmt.Errorf("job %s has more than one container; see https://github.com/kubernetes/test-infra/pull/5403 for discussion on this restriction", name)
-				}
-			}
+		if err := validateAgent(v.Name, v.Agent, v.Spec); err != nil {
+			return err
 		}
-		// Ensure agent is a known value.
-		if agent != string(kube.KubernetesAgent) && agent != string(kube.JenkinsAgent) {
-			return fmt.Errorf("job %s has invalid agent (%s), it needs to be one of the following: %s %s",
-				name, agent, kube.KubernetesAgent, kube.JenkinsAgent)
+		if err := validatePresets(v.Name, v.Labels, v.Spec, c.Presets); err != nil {
+			return err
 		}
 		// Ensure max_concurrency is non-negative.
 		if v.MaxConcurrency < 0 {
-			return fmt.Errorf("job %s jas invalid max_concurrency (%d), it needs to be a non-negative number", name, v.MaxConcurrency)
-		}
-		for _, preset := range c.Presets {
-			if err := mergePreset(preset, v.Labels, v.Spec); err != nil {
-				return fmt.Errorf("could not merge preset: %v", err)
-			}
+			return fmt.Errorf("job %s jas invalid max_concurrency (%d), it needs to be a non-negative number", v.Name, v.MaxConcurrency)
 		}
 	}
 
 	// Validate postsubmits.
 	for _, j := range c.AllPostsubmits(nil) {
-		name := j.Name
-		agent := j.Agent
-		if agent == string(kube.KubernetesAgent) {
-			if j.Spec == nil {
-				return fmt.Errorf("job %s has no spec", name)
-			} else {
-				if len(j.Spec.Containers) > 1 {
-					return fmt.Errorf("job %s has more than one container; see https://github.com/kubernetes/test-infra/pull/5403 for discussion on this restriction", name)
-				}
-			}
+		if err := validateAgent(j.Name, j.Agent, j.Spec); err != nil {
+			return err
 		}
-		// Ensure agent is a known value.
-		if agent != string(kube.KubernetesAgent) && agent != string(kube.JenkinsAgent) {
-			return fmt.Errorf("job %s has invalid agent (%s), it needs to be one of the following: %s %s",
-				name, agent, kube.KubernetesAgent, kube.JenkinsAgent)
+		if err := validatePresets(j.Name, j.Labels, j.Spec, c.Presets); err != nil {
+			return err
 		}
 		// Ensure max_concurrency is non-negative.
 		if j.MaxConcurrency < 0 {
-			return fmt.Errorf("job %s jas invalid max_concurrency (%d), it needs to be a non-negative number", name, j.MaxConcurrency)
-		}
-		for _, preset := range c.Presets {
-			if err := mergePreset(preset, j.Labels, j.Spec); err != nil {
-				return fmt.Errorf("could not merge preset: %v", err)
-			}
+			return fmt.Errorf("job %s jas invalid max_concurrency (%d), it needs to be a non-negative number", j.Name, j.MaxConcurrency)
 		}
 	}
 
 	// Ensure that the periodic durations are valid and specs exist.
 	for _, p := range c.AllPeriodics() {
-		name := p.Name
-		agent := p.Agent
-		if agent == string(kube.KubernetesAgent) {
-			if p.Spec == nil {
-				return fmt.Errorf("job %s has no spec", name)
-			} else {
-				if len(p.Spec.Containers) > 1 {
-					return fmt.Errorf("job %s has more than one container; see https://github.com/kubernetes/test-infra/pull/5403 for discussion on this restriction", name)
-				}
-			}
+		if err := validateAgent(p.Name, p.Agent, p.Spec); err != nil {
+			return err
 		}
-		if agent != string(kube.KubernetesAgent) && agent != string(kube.JenkinsAgent) {
-			return fmt.Errorf("job %s has invalid agent (%s), it needs to be one of the following: %s %s",
-				name, agent, kube.KubernetesAgent, kube.JenkinsAgent)
-		}
-		for _, preset := range c.Presets {
-			if err := mergePreset(preset, p.Labels, p.Spec); err != nil {
-				return fmt.Errorf("could not merge preset: %v", err)
-			}
+		if err := validatePresets(p.Name, p.Labels, p.Spec, c.Presets); err != nil {
+			return err
 		}
 	}
 	// Set the interval on the periodic jobs. It doesn't make sense to do this
@@ -369,20 +335,20 @@ func parseConfig(c *Config) error {
 		c.Plank.PodPendingTimeout = podPendingTimeout
 	}
 
-	if c.JenkinsOperator != nil && len(c.JenkinsOperators) > 0 {
-		return fmt.Errorf("invalid config: use one of jenkins_operator and jenkins_operators")
-	}
-	if c.JenkinsOperator != nil {
-		// Maintain backwards-compatibility - remove JenkinsOperator in the future.
-		logrus.Warning("jenkins_operator is deprecated, please switch to the jenkins_operators option!")
-		c.JenkinsOperators = make([]JenkinsOperator, 0, 1)
-		c.JenkinsOperators = append(c.JenkinsOperators, *c.JenkinsOperator)
-	}
-	if len(c.JenkinsOperators) == 1 {
-		if c.JenkinsOperators[0].LabelSelectorString != "" {
-			return errors.New("label_selector is invalid when used for a single jenkins-operator")
+	if c.Gerrit.TickIntervalString == "" {
+		c.Gerrit.TickInterval = time.Minute
+	} else {
+		tickInterval, err := time.ParseDuration(c.Gerrit.TickIntervalString)
+		if err != nil {
+			return fmt.Errorf("cannot parse duration for c.gerrit.tick_interval: %v", err)
 		}
+		c.Gerrit.TickInterval = tickInterval
 	}
+
+	if c.Gerrit.RateLimit == 0 {
+		c.Gerrit.RateLimit = 5
+	}
+
 	for i := range c.JenkinsOperators {
 		if err := ValidateController(&c.JenkinsOperators[i].Controller); err != nil {
 			return fmt.Errorf("validating jenkins_operators config: %v", err)
@@ -395,6 +361,9 @@ func parseConfig(c *Config) error {
 		// TODO: Invalidate overlapping selectors more
 		if len(c.JenkinsOperators) > 1 && c.JenkinsOperators[i].LabelSelectorString == "" {
 			return errors.New("selector overlap: cannot use an empty label_selector with multiple selectors")
+		}
+		if len(c.JenkinsOperators) == 1 && c.JenkinsOperators[0].LabelSelectorString != "" {
+			return errors.New("label_selector is invalid when used for a single jenkins-operator")
 		}
 	}
 
@@ -511,6 +480,29 @@ func parseConfig(c *Config) error {
 		return err
 	}
 	logrus.SetLevel(lvl)
+
+	return nil
+}
+
+func validateAgent(name, agent string, spec *v1.PodSpec) error {
+	// Ensure that k8s presubmits have a pod spec.
+	if agent == string(kube.KubernetesAgent) && spec == nil {
+		return fmt.Errorf("job %s has no spec", name)
+	}
+	// Ensure agent is a known value.
+	if agent != string(kube.KubernetesAgent) && agent != string(kube.JenkinsAgent) {
+		return fmt.Errorf("job %s has invalid agent (%s), it needs to be one of the following: %s %s",
+			name, agent, kube.KubernetesAgent, kube.JenkinsAgent)
+	}
+	return nil
+}
+
+func validatePresets(name string, labels map[string]string, spec *v1.PodSpec, presets []Preset) error {
+	for _, preset := range presets {
+		if err := mergePreset(preset, labels, spec); err != nil {
+			return fmt.Errorf("job %s failed to merge presets: %v", name, err)
+		}
+	}
 
 	return nil
 }

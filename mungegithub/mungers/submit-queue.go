@@ -51,22 +51,21 @@ import (
 )
 
 const (
-	approvedLabel                    = "approved"
-	lgtmLabel                        = "lgtm"
-	retestNotRequiredLabel           = "retest-not-required"
-	retestNotRequiredDocsOnlyLabel   = "retest-not-required-docs-only"
-	doNotMergeLabel                  = "do-not-merge"
-	wipLabel                         = "do-not-merge/work-in-progress"
-	holdLabel                        = "do-not-merge/hold"
-	deprecatedReleaseNoteLabelNeeded = "release-note-label-needed"
-	releaseNoteLabelNeeded           = "do-not-merge/release-note-label-needed"
-	cncfClaYesLabel                  = "cncf-cla: yes"
-	cncfClaNoLabel                   = "cncf-cla: no"
-	claHumanLabel                    = "cla: human-approved"
-	criticalFixLabel                 = "queue/critical-fix"
-	blocksOthersLabel                = "queue/blocks-others"
-	fixLabel                         = "queue/fix"
-	multirebaseLabel                 = "queue/multiple-rebases"
+	approvedLabel                  = "approved"
+	lgtmLabel                      = "lgtm"
+	retestNotRequiredLabel         = "retest-not-required"
+	retestNotRequiredDocsOnlyLabel = "retest-not-required-docs-only"
+	doNotMergeLabel                = "do-not-merge"
+	wipLabel                       = "do-not-merge/work-in-progress"
+	holdLabel                      = "do-not-merge/hold"
+	releaseNoteLabelNeeded         = "do-not-merge/release-note-label-needed"
+	cncfClaYesLabel                = "cncf-cla: yes"
+	cncfClaNoLabel                 = "cncf-cla: no"
+	claHumanLabel                  = "cla: human-approved"
+	criticalFixLabel               = "queue/critical-fix"
+	blocksOthersLabel              = "queue/blocks-others"
+	fixLabel                       = "queue/fix"
+	multirebaseLabel               = "queue/multiple-rebases"
 
 	sqContext = "Submit Queue"
 
@@ -383,8 +382,8 @@ func getSmoothFactor(dur time.Duration) float64 {
 // This calculates an exponentially smoothed merge Rate based on the formula
 //   newRate = (1-smooth)oldRate + smooth*newRate
 // Which is really great and simple for constant time series data. But of course
-// ours isn't time series data so I vary the smoothing factor based on how long
-// its been since the last entry. See the comments on the `getSmoothFactor` for
+// ours isn't time series data, so I vary the smoothing factor based on how long
+// it has been since the last entry. See the comments on the `getSmoothFactor` for
 // a discussion of why.
 //    This whole thing was dreamed up by eparis one weekend via a combination
 //    of guess-and-test and intuition. Someone who knows about this stuff
@@ -1144,7 +1143,6 @@ func (sq *SubmitQueue) validForMergeExt(obj *github.MungeObject, checkStatus boo
 	for _, label := range []string{
 		cherrypickUnapprovedLabel,
 		blockedPathsLabel,
-		deprecatedReleaseNoteLabelNeeded,
 		releaseNoteLabelNeeded,
 		doNotMergeLabel,
 		wipLabel,

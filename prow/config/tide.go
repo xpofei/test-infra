@@ -55,6 +55,11 @@ type Tide struct {
 	// allowing it to be a template.
 	TargetURL string `json:"target_url,omitempty"`
 
+	// PRStatusBaseUrl is the base URL for the PR status page.
+	// This is used to link to a merge requirements overview
+	// in the tide status context.
+	PRStatusBaseUrl string `json:"pr_status_base_url,omitempty"`
+
 	// MaxGoroutines is the maximum number of goroutines spawned inside the
 	// controller to handle org/repo:branch pools. Defaults to 20. Needs to be a
 	// positive number.
@@ -80,10 +85,13 @@ func (t *Tide) MergeMethod(org, repo string) github.PullRequestMergeType {
 
 // TideQuery is turned into a GitHub search query. See the docs for details:
 // https://help.github.com/articles/searching-issues-and-pull-requests/
-// If we choose to add orgs or branches then be sure to update the logic
-// for listing all PRs in the tide package.
+// If we choose to add orgs then be sure to update the logic for listing all
+// PRs in the tide package.
 type TideQuery struct {
 	Repos []string `json:"repos,omitempty"`
+
+	ExcludedBranches []string `json:"excludedBranches,omitempty"`
+	IncludedBranches []string `json:"includedBranches,omitempty"`
 
 	Labels        []string `json:"labels,omitempty"`
 	MissingLabels []string `json:"missingLabels,omitempty"`
@@ -95,6 +103,12 @@ func (tq *TideQuery) Query() string {
 	toks := []string{"is:pr", "state:open"}
 	for _, r := range tq.Repos {
 		toks = append(toks, fmt.Sprintf("repo:\"%s\"", r))
+	}
+	for _, b := range tq.ExcludedBranches {
+		toks = append(toks, fmt.Sprintf("-base:\"%s\"", b))
+	}
+	for _, b := range tq.IncludedBranches {
+		toks = append(toks, fmt.Sprintf("base:\"%s\"", b))
 	}
 	for _, l := range tq.Labels {
 		toks = append(toks, fmt.Sprintf("label:\"%s\"", l))
@@ -127,4 +141,15 @@ func (tqs TideQueries) AllPRsSince(t time.Time) string {
 		toks = append(toks, fmt.Sprintf("updated:>=%s", t.Format(timeFormatISO8601)))
 	}
 	return strings.Join(toks, " ")
+}
+
+// ByRepo returns a mapping from "org/repo" -> TideQueries that apply to that repo.
+func (tqs TideQueries) ByRepo() map[string]TideQueries {
+	res := make(map[string]TideQueries)
+	for _, tq := range tqs {
+		for _, repo := range tq.Repos {
+			res[repo] = append(res[repo], tq)
+		}
+	}
+	return res
 }

@@ -71,9 +71,13 @@ class FakeSubprocess(object):
     """Keep track of calls."""
     def __init__(self):
         self.calls = []
+        self.file_data = []
 
     def __call__(self, cmd, *a, **kw):
         self.calls.append((cmd, a, kw))
+        for arg in cmd:
+            if arg.startswith('/') and os.path.exists(arg):
+                self.file_data.append(open(arg).read())
 
 
 # pylint: disable=invalid-name
@@ -283,19 +287,19 @@ class PullRefsTest(unittest.TestCase):
         )
 
 
-class ChooseSshKeyTest(unittest.TestCase):
-    """Tests for choose_ssh_key()."""
+class ConfigureSshKeyTest(unittest.TestCase):
+    """Tests for configure_ssh_key()."""
     def test_empty(self):
         """Do not change environ if no ssh key."""
         fake_env = {}
         with Stub(os, 'environ', fake_env):
-            with bootstrap.choose_ssh_key(''):
+            with bootstrap.configure_ssh_key(''):
                 self.assertFalse(fake_env)
 
     def test_full(self):
         fake_env = {}
         with Stub(os, 'environ', fake_env):
-            with bootstrap.choose_ssh_key('hello there'):
+            with bootstrap.configure_ssh_key('hello there'):
                 self.assertIn('GIT_SSH', fake_env)
                 with open(fake_env['GIT_SSH']) as fp:
                     buf = fp.read()
@@ -308,7 +312,7 @@ class ChooseSshKeyTest(unittest.TestCase):
         fake_env = {'GIT_SSH': 'random-value'}
         old_env = dict(fake_env)
         with Stub(os, 'environ', fake_env):
-            with bootstrap.choose_ssh_key('hello there'):
+            with bootstrap.configure_ssh_key('hello there'):
                 self.assertNotEqual(old_env, fake_env)
             self.assertEquals(old_env, fake_env)
 
@@ -488,7 +492,7 @@ class GSUtilTest(unittest.TestCase):
         gsutil.upload_json('fake_path', {'wee': 'fun'})
         self.assertTrue(any(
             'application/json' in a for a in fake.calls[0][0]))
-        self.assertIn('stdin', fake.calls[0][2])  # kwargs
+        self.assertEqual(fake.file_data, ['{\n  "wee": "fun"\n}'])
 
     def test_upload_text_cached(self):
         fake = FakeSubprocess()
@@ -497,7 +501,7 @@ class GSUtilTest(unittest.TestCase):
         self.assertFalse(any(
             'Cache-Control' in a and 'max-age' in a
             for a in fake.calls[0][0]))
-        self.assertIn('stdin', fake.calls[0][2])  # kwargs
+        self.assertEqual(fake.file_data, ['hello world'])
 
     def test_upload_text_default(self):
         fake = FakeSubprocess()
@@ -506,7 +510,7 @@ class GSUtilTest(unittest.TestCase):
         self.assertFalse(any(
             'Cache-Control' in a and 'max-age' in a
             for a in fake.calls[0][0]))
-        self.assertIn('stdin', fake.calls[0][2])  # kwargs
+        self.assertEqual(fake.file_data, ['hello world'])
 
     def test_upload_text_uncached(self):
         fake = FakeSubprocess()
@@ -515,13 +519,14 @@ class GSUtilTest(unittest.TestCase):
         self.assertTrue(any(
             'Cache-Control' in a and 'max-age' in a
             for a in fake.calls[0][0]))
-        self.assertIn('stdin', fake.calls[0][2])  # kwargs
+        self.assertEqual(fake.file_data, ['hello world'])
 
     def test_upload_text_metalink(self):
         fake = FakeSubprocess()
         gsutil = bootstrap.GSUtil(fake)
         gsutil.upload_text('txt', 'path', additional_headers=['foo: bar'])
         self.assertTrue(any('foo: bar' in a for a in fake.calls[0][0]))
+        self.assertEqual(fake.file_data, ['path'])
 
 class FakeGSUtil(object):
     generation = 123
@@ -905,7 +910,7 @@ class SetupMagicEnvironmentTest(unittest.TestCase):
         old_workspace = env[bootstrap.WORKSPACE_ENV]
         with Stub(os, 'environ', env):
             with Stub(os, 'getcwd', lambda: cwd):
-                bootstrap.setup_magic_environment(JOB)
+                bootstrap.setup_magic_environment(JOB, FakeCall())
 
         self.assertIn(bootstrap.WORKSPACE_ENV, env)
         self.assertNotEquals(env[bootstrap.HOME_ENV],
@@ -923,7 +928,7 @@ class SetupMagicEnvironmentTest(unittest.TestCase):
         old_workspace = env[bootstrap.WORKSPACE_ENV]
         with Stub(os, 'environ', env):
             with Stub(os, 'getcwd', lambda: cwd):
-                bootstrap.setup_magic_environment(JOB)
+                bootstrap.setup_magic_environment(JOB, FakeCall())
 
         self.assertIn(bootstrap.WORKSPACE_ENV, env)
         self.assertNotEquals(env[bootstrap.HOME_ENV],
@@ -939,7 +944,7 @@ class SetupMagicEnvironmentTest(unittest.TestCase):
         cwd = '/fake/random-location'
         with Stub(os, 'environ', env):
             with Stub(os, 'getcwd', lambda: cwd):
-                bootstrap.setup_magic_environment(JOB)
+                bootstrap.setup_magic_environment(JOB, FakeCall())
 
         self.assertIn(bootstrap.WORKSPACE_ENV, env)
         self.assertEquals(cwd, env[bootstrap.HOME_ENV])
@@ -949,7 +954,7 @@ class SetupMagicEnvironmentTest(unittest.TestCase):
         env = fake_environment()
         with Stub(os, 'environ', env):
             self.assertNotEquals('this-is-a-job', env[bootstrap.JOB_ENV])
-            bootstrap.setup_magic_environment('this-is-a-job')
+            bootstrap.setup_magic_environment('this-is-a-job', FakeCall())
             self.assertEquals('this-is-a-job', env[bootstrap.JOB_ENV])
 
     def test_expected(self):
@@ -957,7 +962,9 @@ class SetupMagicEnvironmentTest(unittest.TestCase):
         del env[bootstrap.JOB_ENV]
         del env[bootstrap.NODE_ENV]
         with Stub(os, 'environ', env):
-            bootstrap.setup_magic_environment(JOB)
+            # call is only used to git show the HEAD commit, so give a fake
+            # timestamp in return
+            bootstrap.setup_magic_environment(JOB, lambda *a, **kw: '123456\n')
 
         def check(name):
             self.assertIn(name, env)
@@ -969,6 +976,7 @@ class SetupMagicEnvironmentTest(unittest.TestCase):
         check(bootstrap.BOOTSTRAP_ENV)
         check(bootstrap.WORKSPACE_ENV)
         self.assertNotIn(bootstrap.SERVICE_ACCOUNT_ENV, env)
+        self.assertEquals(env[bootstrap.SOURCE_DATE_EPOCH_ENV], '123456')
 
     def test_node_present(self):
         expected = 'whatever'
@@ -991,7 +999,7 @@ class SetupMagicEnvironmentTest(unittest.TestCase):
         env = fake_environment()
         with Stub(os, 'environ', env):
             with Stub(os, 'getcwd', lambda: cwd):
-                bootstrap.setup_magic_environment(JOB)
+                bootstrap.setup_magic_environment(JOB, FakeCall())
 
 
         self.assertTrue(env[bootstrap.CLOUDSDK_ENV].startswith(cwd))
@@ -1381,6 +1389,8 @@ class IntegrationTest(unittest.TestCase):
             # them after each commit.
             return subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip()
         refs = ['master:%s' % head_sha()]
+        master_commit_date = int(subprocess.check_output(
+            ['git', 'show', '-s', '--format=format:%ct', head_sha()]))
         for pr in (123, 456):
             subprocess.check_call(['git', 'checkout', '-b', 'refs/pull/%d/head' % pr, 'master'])
             subprocess.check_call(['git', 'rm', self.MASTER])
@@ -1400,6 +1410,11 @@ class IntegrationTest(unittest.TestCase):
             branch=None,
             pull=pull,
             root=self.root_workspace)
+        head_commit_date = int(subprocess.check_output(
+            ['git', 'show', '-s', '--format=format:%ct', 'test']))
+        # Since there were 2 PRs merged, we expect the timestamp of the latest
+        # commit on the 'test' branch to be 2 more than master.
+        self.assertEqual(head_commit_date, master_commit_date + 2)
 
     def test_pr_bad(self):
         random_pr = 111

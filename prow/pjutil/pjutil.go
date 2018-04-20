@@ -18,11 +18,8 @@ limitations under the License.
 package pjutil
 
 import (
-	"fmt"
-
-	uuid "github.com/satori/go.uuid"
+	"github.com/satori/go.uuid"
 	"github.com/sirupsen/logrus"
-	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/test-infra/prow/config"
@@ -52,7 +49,7 @@ func PresubmitSpec(p config.Presubmit, refs kube.Refs) kube.ProwJobSpec {
 	pjs := kube.ProwJobSpec{
 		Type: kube.PresubmitJob,
 		Job:  p.Name,
-		Refs: refs,
+		Refs: &refs,
 
 		Report:         !p.SkipReport,
 		Context:        p.Context,
@@ -61,7 +58,7 @@ func PresubmitSpec(p config.Presubmit, refs kube.Refs) kube.ProwJobSpec {
 	}
 	pjs.Agent = kube.ProwJobAgent(p.Agent)
 	if pjs.Agent == kube.KubernetesAgent {
-		pjs.PodSpec = *p.Spec
+		pjs.PodSpec = p.Spec
 		pjs.Cluster = p.Cluster
 		if pjs.Cluster == "" {
 			pjs.Cluster = kube.DefaultClusterAlias
@@ -78,12 +75,12 @@ func PostsubmitSpec(p config.Postsubmit, refs kube.Refs) kube.ProwJobSpec {
 	pjs := kube.ProwJobSpec{
 		Type:           kube.PostsubmitJob,
 		Job:            p.Name,
-		Refs:           refs,
+		Refs:           &refs,
 		MaxConcurrency: p.MaxConcurrency,
 	}
 	pjs.Agent = kube.ProwJobAgent(p.Agent)
 	if pjs.Agent == kube.KubernetesAgent {
-		pjs.PodSpec = *p.Spec
+		pjs.PodSpec = p.Spec
 		pjs.Cluster = p.Cluster
 		if pjs.Cluster == "" {
 			pjs.Cluster = kube.DefaultClusterAlias
@@ -103,7 +100,7 @@ func PeriodicSpec(p config.Periodic) kube.ProwJobSpec {
 	}
 	pjs.Agent = kube.ProwJobAgent(p.Agent)
 	if pjs.Agent == kube.KubernetesAgent {
-		pjs.PodSpec = *p.Spec
+		pjs.PodSpec = p.Spec
 		pjs.Cluster = p.Cluster
 		if pjs.Cluster == "" {
 			pjs.Cluster = kube.DefaultClusterAlias
@@ -120,12 +117,12 @@ func BatchSpec(p config.Presubmit, refs kube.Refs) kube.ProwJobSpec {
 	pjs := kube.ProwJobSpec{
 		Type:    kube.BatchJob,
 		Job:     p.Name,
-		Refs:    refs,
+		Refs:    &refs,
 		Context: p.Context, // The Submit Queue's getCompleteBatches needs this.
 	}
 	pjs.Agent = kube.ProwJobAgent(p.Agent)
 	if pjs.Agent == kube.KubernetesAgent {
-		pjs.PodSpec = *p.Spec
+		pjs.PodSpec = p.Spec
 		pjs.Cluster = p.Cluster
 		if pjs.Cluster == "" {
 			pjs.Cluster = kube.DefaultClusterAlias
@@ -135,57 +132,6 @@ func BatchSpec(p config.Presubmit, refs kube.Refs) kube.ProwJobSpec {
 		pjs.RunAfterSuccess = append(pjs.RunAfterSuccess, BatchSpec(nextP, refs))
 	}
 	return pjs
-}
-
-// ProwJobToPod converts a ProwJob to a Pod that will run the tests.
-func ProwJobToPod(pj kube.ProwJob, buildID string) (*v1.Pod, error) {
-	env, err := EnvForSpec(NewJobSpec(pj.Spec, buildID, pj.Name))
-	if err != nil {
-		return nil, err
-	}
-
-	spec := pj.Spec.PodSpec
-	spec.RestartPolicy = "Never"
-
-	// Set environment variables in each container in the pod spec. We don't
-	// want to update the spec in place, since that will update the ProwJob
-	// spec. Instead, create a copy.
-	spec.Containers = []v1.Container{}
-	for i := range pj.Spec.PodSpec.Containers {
-		spec.Containers = append(spec.Containers, pj.Spec.PodSpec.Containers[i])
-		spec.Containers[i].Name = fmt.Sprintf("%s-%d", pj.ObjectMeta.Name, i)
-		spec.Containers[i].Env = append(spec.Containers[i].Env, kubeEnv(env)...)
-	}
-	podLabels := make(map[string]string)
-	for k, v := range pj.ObjectMeta.Labels {
-		podLabels[k] = v
-	}
-	podLabels[kube.CreatedByProw] = "true"
-	podLabels[kube.ProwJobTypeLabel] = string(pj.Spec.Type)
-	return &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   pj.ObjectMeta.Name,
-			Labels: podLabels,
-			Annotations: map[string]string{
-				kube.ProwJobAnnotation: pj.Spec.Job,
-			},
-		},
-		Spec: spec,
-	}, nil
-}
-
-// kubeEnv transforms a mapping of environment variables
-// into their serialized form for a PodSpec
-func kubeEnv(environment map[string]string) []v1.EnvVar {
-	var kubeEnvironment []v1.EnvVar
-	for key, value := range environment {
-		kubeEnvironment = append(kubeEnvironment, v1.EnvVar{
-			Name:  key,
-			Value: value,
-		})
-	}
-
-	return kubeEnvironment
 }
 
 // PartitionActive separates the provided prowjobs into pending and triggered
@@ -246,7 +192,7 @@ func ProwJobFields(pj *kube.ProwJob) logrus.Fields {
 	if len(pj.ObjectMeta.Labels[github.EventGUID]) > 0 {
 		fields[github.EventGUID] = pj.ObjectMeta.Labels[github.EventGUID]
 	}
-	if len(pj.Spec.Refs.Pulls) == 1 {
+	if pj.Spec.Refs != nil && len(pj.Spec.Refs.Pulls) == 1 {
 		fields[github.PrLogField] = pj.Spec.Refs.Pulls[0].Number
 		fields[github.RepoLogField] = pj.Spec.Refs.Repo
 		fields[github.OrgLogField] = pj.Spec.Refs.Org
