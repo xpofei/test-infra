@@ -22,6 +22,8 @@ GIT_VERSION              ?= 0.1
 
 # YYYYmmdd-commitish
 TAG = $(shell date -u +v%Y%m%d)-$(shell git describe --tags --always --dirty)
+# CHERRYPICKER_VERSION is the version of the cherrypicker image
+CHERRYPICKER_VERSION      ?= $(TAG)
 # HOOK_VERSION is the version of the hook image
 HOOK_VERSION             ?= $(TAG)
 # SINKER_VERSION is the version of the sinker image
@@ -106,6 +108,13 @@ branchprotector-cronjob: get-cluster-credentials
 	kubectl apply -f cluster/branchprotector_cronjob.yaml
 
 .PHONY: branchprotector-image branchprotector-cronjob
+
+cherrypicker-image:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o external-plugins/cherrypicker/cherrypicker k8s.io/test-infra/prow/external-plugins/cherrypicker
+	docker build -t "$(REGISTRY)/$(PROJECT)/cherrypicker:$(CHERRYPICKER_VERSION)" $(DOCKER_LABELS) external-plugins/cherrypicker
+	$(PUSH) "$(REGISTRY)/$(PROJECT)/cherrypicker:$(CHERRYPICKER_VERSION)"
+
+.PHONY: cherrypicker-image
 
 hook-image: git-image
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o cmd/hook/hook k8s.io/test-infra/prow/cmd/hook
