@@ -32,8 +32,8 @@ import (
 const pluginName = "label"
 
 var (
-	labelRegex              = regexp.MustCompile(`(?m)^/(area|committee|kind|priority|sig|branch|queue|version|scrum|status|from|rc|rt|type|product)\s*(.*)$`)
-	removeLabelRegex        = regexp.MustCompile(`(?m)^/remove-(area|committee|kind|priority|sig|branch|queue|version|scrum|status|from|rc|rt|type|product)\s*(.*)$`)
+	labelRegex              = regexp.MustCompile(`(?m)^/(area|committee|kind|priority|sig|branch|queue|version|scrum|status|from|rc|rt|type|product|need)\s*(.*)$`)
+	removeLabelRegex        = regexp.MustCompile(`(?m)^/remove-(area|committee|kind|priority|sig|branch|queue|version|scrum|status|from|rc|rt|type|product|need)\s*(.*)$`)
 	singleChoice            = flag.String("single-choice", "area,kind,priority,queue,scrum,status,from,rc,rt,type,product", "Comma separated list of command that needs support single-choice")
 	nonExistentLabelOnIssue = "Those labels are not set on the issue: `%v`"
 )
@@ -45,7 +45,7 @@ func init() {
 func helpProvider(config *plugins.Configuration, enabledRepos []string) (*pluginhelp.PluginHelp, error) {
 	// The Config field is omitted because this plugin is not configurable.
 	pluginHelp := &pluginhelp.PluginHelp{
-		Description: "The label plugin provides commands that add or remove certain types of labels. Labels of the following types can be manipulated: 'area/*', 'committee/*', 'kind/*', 'priority/*', 'sig/*' , 'branch/*', 'queue/*', 'version/*', 'scrum/*', 'status/*', 'from/*', 'rc/*', 'rt/*', 'type/*' and 'product/*'. Labels of the following types is single selection: 'area/*', 'kind/*', 'priority/*', 'queue/*', 'scrum/*', 'status/*', 'from/*', 'rc/*', 'rt/*', 'type/*' and 'product/*'.",
+		Description: "The label plugin provides commands that add or remove certain types of labels. Labels of the following types can be manipulated: 'area/*', 'committee/*', 'kind/*', 'priority/*', 'sig/*' , 'branch/*', 'queue/*', 'version/*', 'scrum/*', 'status/*', 'from/*', 'rc/*', 'rt/*', 'type/*', 'product/*' and 'need/*'. Labels of the following types is single selection: 'area/*', 'kind/*', 'priority/*', 'queue/*', 'scrum/*', 'status/*', 'from/*', 'rc/*', 'rt/*', 'type/*' and 'product/*'.",
 	}
 	pluginHelp.AddCommand(pluginhelp.Command{
 		Usage:       "/[remove-](area|committee|kind|priority|sig|branch|queue|version|scrum|status|from|rc|rt|type|product) <target>",
@@ -81,6 +81,11 @@ func getLabelsFromREMatches(matches [][]string) (labels []string) {
 }
 
 func handle(gc githubClient, log *logrus.Entry, e *github.GenericCommentEvent) error {
+	// Only consider create event, as edit event may cover newer comment event.
+	if e.Action != github.GenericCommentActionCreated {
+		return nil
+	}
+
 	labelMatches := labelRegex.FindAllStringSubmatch(e.Body, -1)
 	removeLabelMatches := removeLabelRegex.FindAllStringSubmatch(e.Body, -1)
 	if len(labelMatches) == 0 && len(removeLabelMatches) == 0 {
