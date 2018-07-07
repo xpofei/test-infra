@@ -52,6 +52,8 @@ GCSUPLOAD_VERSION        ?= $(TAG)
 ENTRYPOINT_VERSION       ?= $(TAG)
 # SIDECAR_VERSION is the version of the sidecar image
 SIDECAR_VERSION          ?= $(TAG)
+# NEEDS-REBASE_VERSION is the version of the needs-rebase image
+NEEDS_REBASE_VERSION     ?= $(TAG)
 
 # These are the usual GKE variables.
 PROJECT       ?= caicloud
@@ -247,3 +249,10 @@ sidecar-image: alpine-image
 	$(PUSH) "$(REGISTRY)/$(PROJECT)/sidecar:$(SIDECAR_VERSION)"
 
 .PHONY: clonerefs-image initupload-image gcsupload-image entrypoint-image sidecar-image
+
+needs-rebase-image:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o external-plugins/needs-rebase/needs_rebase k8s.io/test-infra/prow/external-plugins/needs-rebase
+	docker build -t "$(REGISTRY)/$(PROJECT)/needs-rebase:$(NEEDS_REBASE_VERSION)" $(DOCKER_LABELS) external-plugins/needs-rebase
+	$(PUSH) "$(REGISTRY)/$(PROJECT)/needs-rebase:$(NEEDS_REBASE_VERSION)"
+
+.PHONY: needs-rebase-image
