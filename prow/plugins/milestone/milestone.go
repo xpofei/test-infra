@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package setmilestone implements the `/milestone` command which allows members of the milestone
-// maintainers team to specify a milestone to be applied to an Issue or PR.
+// Package milestone implements the `/milestone` command which allows members of the approvers in the root path
+// to specify a milestone to be applied to an Issue or PR.
 package milestone
 
 import (
@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v2"
+
 	"github.com/sirupsen/logrus"
 
 	"k8s.io/test-infra/prow/github"
@@ -31,11 +33,14 @@ import (
 	"k8s.io/test-infra/prow/plugins"
 )
 
-const pluginName = "milestone"
+const (
+	pluginName = "milestone"
+	ownersPath = "OWNERS"
+)
 
 var (
 	milestoneRegex   = regexp.MustCompile(`(?m)^/milestone\s+(.+?)\s*$`)
-	mustBeSigLead    = "You must be a member of the [%s](https://github.com/orgs/%s/teams/%s/members) github team to set the milestone."
+	mustBeApprovers  = "You must be a member of approvers in [OWNERS](https://github.com/%s/%s/blob/master/OWNERS) to set the milestone."
 	invalidMilestone = "The provided milestone is not valid for this repository. Milestones in this repository: [%s]\n\nUse `/milestone %s` to clear the milestone."
 	clearKeyword     = "clear"
 )
@@ -46,6 +51,11 @@ type githubClient interface {
 	SetMilestone(org, repo string, issueNum, milestoneNum int) error
 	ListTeamMembers(id int) ([]github.TeamMember, error)
 	ListMilestones(org, repo string) ([]github.Milestone, error)
+	GetFile(org, repo, filepath, commit string) ([]byte, error)
+}
+
+type owners struct {
+	Approvers []string `yaml:"approvers"`
 }
 
 func init() {
@@ -60,7 +70,7 @@ func helpProvider(config *plugins.Configuration, enabledRepos []string) (*plugin
 		Usage:       "/milestone <version> or /milestone clear",
 		Description: "Updates the milestone for an issue or PR",
 		Featured:    false,
-		WhoCanUse:   "Members of the milestone maintainers GitHub team can use the '/milestone' command.",
+		WhoCanUse:   "Users listed as 'approvers' in root OWNERS files.",
 		Examples:    []string{"/milestone v1.10", "/milestone v1.9", "/milestone clear"},
 	})
 	return pluginHelp, nil
@@ -90,21 +100,29 @@ func handle(gc githubClient, log *logrus.Entry, e *github.GenericCommentEvent, m
 	org := e.Repo.Owner.Login
 	repo := e.Repo.Name
 
-	milestoneMaintainers, err := gc.ListTeamMembers(maintainersID)
+	byte, err := gc.GetFile(org, repo, ownersPath, "")
 	if err != nil {
 		return err
 	}
-	found := false
-	for _, person := range milestoneMaintainers {
-		login := github.NormLogin(e.User.Login)
-		if github.NormLogin(person.Login) == login {
-			found = true
+
+	owners := &owners{}
+	err = yaml.Unmarshal(byte, owners)
+	if err != nil {
+		fmt.Print(err)
+	}
+
+	isOwner := false
+	login := github.NormLogin(e.User.Login)
+	for _, person := range owners.Approvers {
+		if person == login {
+			isOwner = true
 			break
 		}
 	}
-	if !found {
-		// not in the milestone maintainers team
-		msg := fmt.Sprintf(mustBeSigLead, maintainersName, org, maintainersName)
+
+	if !isOwner {
+		// not in the OWNERS file of root path
+		msg := fmt.Sprintf(mustBeApprovers, org, repo)
 		return gc.CreateComment(org, repo, e.Number, plugins.FormatResponseRaw(e.Body, e.HTMLURL, e.User.Login, msg))
 	}
 
