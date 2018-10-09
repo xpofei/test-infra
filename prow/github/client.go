@@ -71,10 +71,10 @@ type Client struct {
 }
 
 const (
-	maxRetries    = 8
-	max404Retries = 2
-	maxSleepTime  = 2 * time.Minute
-	initialDelay  = 2 * time.Second
+	maxRetries    = 10
+	max404Retries = 4
+	maxSleepTime  = 5 * time.Minute
+	initialDelay  = 1 * time.Second
 )
 
 // Interface for how prow interacts with the http client, which we may throttle.
