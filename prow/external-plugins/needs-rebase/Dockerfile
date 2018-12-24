@@ -15,5 +15,13 @@
 FROM gcr.io/k8s-prow/git:0.1
 LABEL maintainer="baomengjiang@caicloud.io"
 
+RUN   apk update \
+    && apk add ca-certificates wget \
+    && update-ca-certificates \
+    && wget -O /usr/local/bin/dumb-init https://github.com/Yelp/dumb-init/releases/download/v1.2.2/dumb-init_1.2.2_amd64 \
+    && chmod +x /usr/local/bin/dumb-init
+
+ENTRYPOINT ["/usr/local/bin/dumb-init", "--"]
+
 COPY needs_rebase /needs_rebase
-ENTRYPOINT ["/needs_rebase"]
+CMD ["/needs_rebase", "--dry-run=false", "--plugin-config=/etc/plugins/plugins"]
