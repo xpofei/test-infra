@@ -32,8 +32,8 @@ import (
 const pluginName = "label"
 
 var (
-	labelRegex              = regexp.MustCompile(`(?m)^/(area|committee|flow|kind|priority|sig|branch|queue|version|scrum|status|from|rca|rc|rt|type|product|need|infra-area|resolution|proj)\s*(.*)$`)
-	removeLabelRegex        = regexp.MustCompile(`(?m)^/remove-(area|committee|flow|kind|priority|sig|branch|queue|version|scrum|status|from|rca|rc|rt|type|product|need|infra-area|resolution|proj)\s*(.*)$`)
+	labelRegex              = regexp.MustCompile(`(?m)^/(area|committee|flow|kind|priority|sig|branch|queue|version|scrum|status|from|rca|rc|rt|type|product|need|infra-area|resolution|proj|confirm)\s*(.*)$`)
+	removeLabelRegex        = regexp.MustCompile(`(?m)^/remove-(area|committee|flow|kind|priority|sig|branch|queue|version|scrum|status|from|rca|rc|rt|type|product|need|infra-area|resolution|proj|confirm)\s*(.*)$`)
 	singleChoice            = flag.String("single-choice", "area,flow,kind,priority,queue,scrum,status,from,rc,rt,type,product,resolution,version,proj", "Comma separated list of command that needs support single-choice")
 	nonExistentLabelOnIssue = "Those labels are not set on the issue: `%v`"
 )
