@@ -592,9 +592,9 @@ Associated issue requirement bypassed by: {{range $index, $approval := .ap.ListN
 
 {{ end -}}
 
-The full list of commands accepted by this bot can be found [here](https://github.com/caicloud/engineering/blob/master/docs/caicloud_bot.md#bot-commands).
+The full list of commands accepted by this bot can be found [here](https://github.com/caicloud/engineering/blob/master/guidelines/caicloud_bot.md#bot-commands).
 
-The pull request process is described [here](https://git.k8s.io/community/contributors/guide/owners.md#the-code-review-process)
+The pull request process is described [here](https://github.com/caicloud/engineering/blob/master/guidelines/caicloud_bot.md#typical-workflow)
 
 <details {{if (and (not .ap.AreFilesApproved) (not (call .ap.ManuallyApproved))) }}open{{end}}>
 Needs approval from an approver in each of these files:

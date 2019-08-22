@@ -19,7 +19,7 @@ const (
 	claNoLabel                 = "caicloud-cla: no"
 	caicloudclaNotFoundMessage = `Thanks for your pull request. Before we can look at your pull request, you'll need to finish a Contributor License Agreement (CLA).
 
-:memo: **Please follow instructions at <https://github.com/caicloud/engineering/blob/master/docs/CLA.md> to complete the CLA.**
+:memo: **Please follow instructions at <https://github.com/caicloud/engineering/blob/master/guidelines/cla.md> to complete the CLA.**
 
 <details>
 
