@@ -56,13 +56,13 @@ SIDECAR_VERSION          ?= $(TAG)
 NEEDS_REBASE_VERSION     ?= $(TAG)
 
 # These are the usual GKE variables.
-PROJECT       ?= caicloud
+PROJECT       ?= release
 BUILD_PROJECT ?= k8s-prow-builds
 ZONE          ?= us-central1-f
 CLUSTER       ?= prow
 
 # Build and push specific variables.
-REGISTRY ?= cargo.caicloudprivatetest.com
+REGISTRY ?= cargo.caicloud.xyz
 PUSH     ?= docker push
 
 DOCKER_LABELS=--label io.k8s.prow.git-describe="$(shell git describe --tags --always --dirty)"
