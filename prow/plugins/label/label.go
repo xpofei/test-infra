@@ -32,6 +32,7 @@ import (
 const pluginName = "label"
 
 var (
+	commentRegex           = regexp.MustCompile(`(?s)<!--(.*?)-->`)
 	labelRegex              = regexp.MustCompile(`(?m)^/(area|committee|flow|kind|priority|sig|branch|queue|version|scrum|status|from|rca|rc|rt|type|product|need|infra-area|resolution|proj|confirm)\s*(.*)$`)
 	removeLabelRegex        = regexp.MustCompile(`(?m)^/remove-(area|committee|flow|kind|priority|sig|branch|queue|version|scrum|status|from|rca|rc|rt|type|product|need|infra-area|resolution|proj|confirm)\s*(.*)$`)
 	singleChoice            = flag.String("single-choice", "area,flow,kind,priority,queue,scrum,status,from,rc,rt,type,product,resolution,version,proj", "Comma separated list of command that needs support single-choice")
@@ -86,8 +87,9 @@ func handle(gc githubClient, log *logrus.Entry, e *github.GenericCommentEvent) e
 		return nil
 	}
 
-	labelMatches := labelRegex.FindAllStringSubmatch(e.Body, -1)
-	removeLabelMatches := removeLabelRegex.FindAllStringSubmatch(e.Body, -1)
+	bodyWithoutComments := commentRegex.ReplaceAllString(e.Body, "")
+	labelMatches := labelRegex.FindAllStringSubmatch(bodyWithoutComments, -1)
+	removeLabelMatches := removeLabelRegex.FindAllStringSubmatch(bodyWithoutComments, -1)
 	if len(labelMatches) == 0 && len(removeLabelMatches) == 0 {
 		return nil
 	}
@@ -176,7 +178,7 @@ func handle(gc githubClient, log *logrus.Entry, e *github.GenericCommentEvent) e
 	// Tried to remove Labels that were not present on the Issue
 	if len(noSuchLabelsOnIssue) > 0 {
 		msg := fmt.Sprintf(nonExistentLabelOnIssue, strings.Join(noSuchLabelsOnIssue, ", "))
-		return gc.CreateComment(org, repo, e.Number, plugins.FormatResponseRaw(e.Body, e.HTMLURL, e.User.Login, msg))
+		return gc.CreateComment(org, repo, e.Number, plugins.FormatResponseRaw(bodyWithoutComments, e.HTMLURL, e.User.Login, msg))
 	}
 
 	return nil
