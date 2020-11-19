@@ -351,6 +351,39 @@ func TestLabel(t *testing.T) {
 			expectedRemovedLabels: formatLabels("area/ruby", "kind/srv", "priority/l", "priority/m"),
 			commenter:             orgMember,
 		},
+		{
+			name: "Strip markdown comments",
+			body: `
+<!--
+/kind bug
+/kind cleanup
+-->
+/area infra
+`,
+			repoLabels:            []string{"area/infra"},
+			issueLabels:           []string{},
+			expectedNewLabels:     formatLabels("area/infra"),
+			expectedRemovedLabels: []string{},
+			commenter:             orgMember,
+		},
+		{
+			name: "Strip markdown comments non greedy",
+			body: `
+<!--
+/kind bug
+-->
+/kind cleanup
+<!--
+/area infra
+-->
+/kind regression
+`,
+			repoLabels:            []string{"kind/cleanup", "kind/regression"},
+			issueLabels:           []string{},
+			expectedNewLabels:     formatLabels("kind/cleanup", "kind/regression"),
+			expectedRemovedLabels: []string{},
+			commenter:             orgMember,
+		},
 	}
 
 	for _, tc := range testcases {
